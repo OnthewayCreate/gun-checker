@@ -61,7 +61,7 @@ const readFileAsText = (file, encoding) => {
   });
 };
 
-// JSONクリーニングの強化版
+// JSONクリーニングの超強化版
 const cleanJson = (text) => {
   try {
     // マークダウンの除去
@@ -70,6 +70,17 @@ const cleanJson = (text) => {
     // 最初と最後の余計な文字を削除して配列部分だけ取り出す
     const start = cleaned.indexOf('[');
     const end = cleaned.lastIndexOf(']');
+    
+    // 配列が見つからない場合、単一オブジェクトの可能性を探る
+    if (start === -1 || end === -1) {
+        const startObj = cleaned.indexOf('{');
+        const endObj = cleaned.lastIndexOf('}');
+        if (startObj !== -1 && endObj !== -1) {
+            return `[${cleaned.substring(startObj, endObj + 1)}]`;
+        }
+        return cleaned; // 諦めてそのまま返す
+    }
+    
     if (start !== -1 && end !== -1) {
       cleaned = cleaned.substring(start, end + 1);
     }
@@ -122,7 +133,7 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
 【出力ルール】
 - 疑わしいものは全てピックアップしてください。
 - 安全な国内製品(ASGKマーク有など)は「Medium」としてください。
-- JSON形式以外は絶対に出力しないでください。
+- JSON形式以外は絶対に出力しないでください。解説文は不要です。
 
 【出力形式(JSON)】
 [{"id": ID, "risk_level": "Critical/High/Medium/Low", "reason": "短い根拠"}, ...]
@@ -176,20 +187,32 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
     let parsedResults;
     try {
         parsedResults = JSON.parse(cleanText);
+        // 単一オブジェクトで返ってきた場合の救済
+        if (!Array.isArray(parsedResults) && typeof parsedResults === 'object') {
+            parsedResults = [parsedResults];
+        }
     } catch (e) {
         console.error("JSON Parse Error:", e, cleanText);
-        throw new Error("AI回答の形式エラー");
+        throw new Error(`解析不能: ${e.message}`);
     }
 
     if (!Array.isArray(parsedResults)) throw new Error("Not an array");
 
     const resultMap = {};
     parsedResults.forEach(item => {
-      let risk = item.risk_level;
+      let risk = item.risk_level ? String(item.risk_level).trim() : 'Low';
+      
+      // 表記ゆれ対応
+      if (risk.includes('Critical')) risk = 'Critical';
+      else if (risk.includes('High')) risk = 'High';
+      else if (risk.includes('Medium')) risk = 'Medium';
+      else if (risk.includes('Low')) risk = 'Low';
+      
       if (['危険', 'Critical'].includes(risk)) risk = 'Critical';
       else if (['高', 'High'].includes(risk)) risk = 'High';
       else if (['中', 'Medium'].includes(risk)) risk = 'Medium';
       else risk = 'Low';
+      
       resultMap[item.id] = { risk, reason: item.reason };
     });
     return resultMap;
