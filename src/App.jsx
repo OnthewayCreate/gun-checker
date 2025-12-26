@@ -16,13 +16,14 @@ const RISK_MAP = {
 };
 
 const MODELS = [
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (最新・推奨)' },
+  { id: 'gemini-3.0-flash', name: 'Gemini 3.0 Flash (最新)' },
+  { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (実験的)' },
   { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (安定)' },
   { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B (軽量)' },
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (高精度)' },
 ];
 
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-3.0-flash';
 const FALLBACK_MODEL = 'gemini-1.5-flash';
 
 // ==========================================
@@ -421,27 +422,43 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  // 修正: 元データの全カラムを含めて出力する
   const downloadResultCSV = () => {
     if (results.length === 0) return alert("抽出されたデータがありません");
     
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    let csvContent = "商品名,リスク判定,理由,元ファイル名,判定日時\n";
+    
+    // ヘッダー生成: 元のCSVヘッダー + 判定結果用のヘッダー
+    const outputHeaders = [...headers, "リスク判定", "理由", "判定日時"];
+    let csvContent = outputHeaders.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
     
     results.forEach(r => {
+      // idを使って元のCSV行データを取得
+      const originalRow = csvData[r.id];
+      if (!originalRow) return;
+
       const riskLabel = RISK_MAP[r.risk]?.label || r.risk;
-      const name = `"${(r.productName || '').replace(/"/g, '""')}"`;
       const reason = `"${(r.reason || '').replace(/"/g, '""')}"`;
-      const file = `"${(r.sourceFile || '').replace(/"/g, '""')}"`;
-      const date = r.createdAt ? new Date(r.createdAt.seconds * 1000).toLocaleString() : new Date().toLocaleString();
-      csvContent += `${name},${riskLabel},${reason},${file},${date}\n`;
+      const date = new Date().toLocaleString();
+
+      // 元の行データをCSV形式に変換
+      const rowString = originalRow.map(field => {
+        const val = field === null || field === undefined ? '' : String(field);
+        return `"${val.replace(/"/g, '""')}"`;
+      }).join(',');
+
+      // 結合: 元の行 + 判定結果
+      csvContent += `${rowString},${riskLabel},${reason},${date}\n`;
     });
+
     const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.setAttribute("download", `dangerous_guns_recovery_list.csv`);
     document.body.appendChild(link);
-    link.click(); document.body.removeChild(link);
+    link.click(); 
+    document.body.removeChild(link);
   };
 
   const handleReset = () => {
