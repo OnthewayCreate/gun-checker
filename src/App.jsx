@@ -61,35 +61,27 @@ const readFileAsText = (file, encoding) => {
   });
 };
 
-// JSONクリーニングの超強化版
+// JSONクリーニングの超強化版 (正規表現による強制抽出)
 const cleanJson = (text) => {
   try {
-    // マークダウンの除去
-    let cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    // 1. まず最も外側の [ ... ] を探す (改行を含めてマッチ)
+    const arrayMatch = text.match(/\[[\s\S]*\]/);
     
-    // 最初と最後の余計な文字を削除して配列部分だけ取り出す
-    const start = cleaned.indexOf('[');
-    const end = cleaned.lastIndexOf(']');
-    
-    // 配列が見つからない場合、単一オブジェクトの可能性を探る
-    if (start === -1 || end === -1) {
-        const startObj = cleaned.indexOf('{');
-        const endObj = cleaned.lastIndexOf('}');
-        if (startObj !== -1 && endObj !== -1) {
-            return `[${cleaned.substring(startObj, endObj + 1)}]`;
-        }
-        return cleaned; // 諦めてそのまま返す
+    if (arrayMatch) {
+      return arrayMatch[0];
     }
-    
-    if (start !== -1 && end !== -1) {
-      cleaned = cleaned.substring(start, end + 1);
+
+    // 2. 配列が見つからない場合、単一オブジェクト { ... } を探して配列で包む
+    const objMatch = text.match(/\{[\s\S]*\}/);
+    if (objMatch) {
+      return `[${objMatch[0]}]`;
     }
-    
-    // 簡易的な構文修復 (末尾のカンマ削除など)
-    cleaned = cleaned.replace(/,\s*]/g, ']'); 
-    
-    return cleaned;
-  } catch (e) { return text; }
+
+    // 3. それでもダメなら、マークダウン記法だけ削除してイチかバチか返す
+    return text.replace(/```json/g, '').replace(/```/g, '').trim();
+  } catch (e) { 
+    return text; 
+  }
 };
 
 const parseKeys = (text) => {
@@ -110,42 +102,37 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
 
   const apiKey = availableKeys[Math.floor(Math.random() * availableKeys.length)];
   const productsListText = products.map(p => `ID:${p.id} 商品名:${p.name}`).join('\n');
+  
+  // プロンプトをJSON出力に特化
   const systemInstruction = `
-あなたは警察庁から委託された【トイガン安全確認サポーター】です。
-入力された商品リストから、**警察庁が指定する「真正拳銃と認定された玩具銃（全16種類）」**に該当する商品を抽出してください。
+あなたは真正拳銃回収スクリーニングシステムです。
+入力データから、警察庁指定の「真正拳銃と認定された玩具銃（全16種類）」に該当する危険な商品を抽出してください。
 
-【最重要ターゲット: REAL GIMMICK MINI REVOLVER】
-以下のキーワードを含む商品は**無条件で「Critical」**としてください。
-- "REAL GIMMICK" (リアルギミック)
-- "MINI REVOLVER" (ミニリボルバー)
-- "YUMEYA" (販売元: ユメヤ)
-- "SOPEN"
+【対象】
+- "REAL GIMMICK", "MINI REVOLVER", "YUMEYA", "SOPEN" を含む商品
+- 金属製(Full Metal)、薬莢排出、リアル構造を謳う海外製小型リボルバー
 
-【真正拳銃認定された16種類の構造的特徴】
-以下の特徴を持つ商品は「High」または「Critical」で抽出してください。
-1. **回転弾倉式拳銃（リボルバー）**: 弾倉が貫通しており、実包が装填可能なもの。
-2. **自動装填式拳銃（オートマチック）**: スライドが可動し、撃針機能を持つもの。
-3. **上下二連式拳銃**: デリンジャータイプ等で、薬室が貫通しているもの。
-4. **単発式拳銃**: 構造が単純で改造が容易なもの。
-5. **四連式拳銃**: ペッパーボックスタイプなど。
-6. その他、**金属製(Full Metal)**、**薬莢排出**を謳う海外製トイガン。
+【出力形式】
+以下のJSON配列フォーマットのみを出力してください。**解説や前置きは一切不要です。**
+[{"id": ID, "risk_level": "Critical", "reason": "理由"}, ...]
 
-【出力ルール】
-- 疑わしいものは全てピックアップしてください。
-- 安全な国内製品(ASGKマーク有など)は「Medium」としてください。
-- JSON形式以外は絶対に出力しないでください。解説文は不要です。
-
-【出力形式(JSON)】
-[{"id": ID, "risk_level": "Critical/High/Medium/Low", "reason": "短い根拠"}, ...]
+risk_levelは以下のいずれか:
+- Critical: 回収対象（REAL GIMMICK等）
+- High: 要確認（海外製フルメタル等）
+- Medium: 国内安全品（ASGKマーク等）
+- Low: 対象外
 `;
 
   const currentModelId = isFallback ? FALLBACK_MODEL : (modelId || DEFAULT_MODEL);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentModelId}:generateContent?key=${apiKey}`;
   
   const payload = {
-    contents: [{ parts: [{ text: `以下の販売リストから回収対象となる危険な銃器商品を抽出せよ:\n${productsListText}` }] }],
+    contents: [{ parts: [{ text: productsListText }] }], // 入力テキストもシンプルに
     systemInstruction: { parts: [{ text: systemInstruction }] },
-    generationConfig: { responseMimeType: "application/json" }
+    generationConfig: { 
+      responseMimeType: "application/json",
+      temperature: 0.1 // 創造性を下げてフォーマット遵守を優先
+    }
   };
 
   try {
@@ -155,7 +142,6 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
       body: JSON.stringify(payload)
     });
     
-    // エラーハンドリングの強化
     if (response.status === 404) {
       if (!isFallback && currentModelId !== FALLBACK_MODEL) {
         console.warn(`モデル(${currentModelId})404エラー。安定版(${FALLBACK_MODEL})で自動リトライします。`);
@@ -171,7 +157,6 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
     }
 
     if (response.status === 429 || response.status === 503) {
-      // 429/503エラー時は少し長めに待機してリトライ
       const waitTime = 3000 + Math.random() * 4000;
       await new Promise(resolve => setTimeout(resolve, waitTime));
       return checkIPRiskBulkWithRotation(products, availableKeys, setAvailableKeys, currentModelId, isFallback);
@@ -192,17 +177,23 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
             parsedResults = [parsedResults];
         }
     } catch (e) {
-        console.error("JSON Parse Error:", e, cleanText);
-        throw new Error(`解析不能: ${e.message}`);
+        console.error("JSON Parse Error. Raw:", rawText, "Cleaned:", cleanText);
+        // パースエラー時、IDとErrorを返して全滅を防ぐ
+        const errorMap = {};
+        products.forEach(p => { errorMap[p.id] = { risk: "Error", reason: "AI応答形式エラー" }; });
+        return errorMap;
     }
 
     if (!Array.isArray(parsedResults)) throw new Error("Not an array");
 
     const resultMap = {};
     parsedResults.forEach(item => {
+      // IDのマッチング精度向上（数値型・文字列型対応）
+      const matchingProduct = products.find(p => String(p.id) === String(item.id));
+      if (!matchingProduct) return;
+
       let risk = item.risk_level ? String(item.risk_level).trim() : 'Low';
       
-      // 表記ゆれ対応
       if (risk.includes('Critical')) risk = 'Critical';
       else if (risk.includes('High')) risk = 'High';
       else if (risk.includes('Medium')) risk = 'Medium';
@@ -213,14 +204,21 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
       else if (['中', 'Medium'].includes(risk)) risk = 'Medium';
       else risk = 'Low';
       
-      resultMap[item.id] = { risk, reason: item.reason };
+      resultMap[matchingProduct.id] = { risk, reason: item.reason };
     });
+    
+    // レスポンスに含まれなかった商品はLow扱いにする
+    products.forEach(p => {
+        if (!resultMap[p.id]) {
+            resultMap[p.id] = { risk: "Low", reason: "判定なし(安全)" };
+        }
+    });
+
     return resultMap;
 
   } catch (error) {
     if (error.message.includes("ALL_KEYS_DEAD")) throw error;
     console.error("Bulk Check Error:", error);
-    // エラー時も処理を止めないためにErrorオブジェクトを返す
     const errorMap = {};
     products.forEach(p => {
       errorMap[p.id] = { risk: "Error", reason: error.message };
