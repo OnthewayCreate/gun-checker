@@ -17,14 +17,13 @@ const RISK_MAP = {
 };
 
 const MODELS = [
-  { id: 'gemini-3.0-flash', name: 'Gemini 3.0 Flash (最新)' },
-  { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (実験的)' },
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (安定)' },
+  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (推奨・高速)' },
   { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B (軽量)' },
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (高精度)' },
+  { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (実験的)' },
 ];
 
-const DEFAULT_MODEL = 'gemini-3.0-flash';
+const DEFAULT_MODEL = 'gemini-1.5-flash';
 const FALLBACK_MODEL = 'gemini-1.5-flash';
 
 // 商品名を特定するためのキーワード（優先順）
@@ -156,7 +155,7 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
 あなたは真正拳銃回収スクリーニングシステムです。
 入力データから、**「銃」に関連するあらゆるおもちゃ（ガング）**を抽出し、危険度を判定してください。
 
-【重要：違法性の判断基準の厳格化】
+【重要：違法性の判断基準の更新】
 **「金属製」だけが違法の基準ではありません。**
 警察庁の最新情報によると、**「プラスチック製」であっても、撃針（ファイアリングピン）を有し、薬莢の雷管を打撃して発射する機構を持つものは「真正拳銃」として摘発対象**となります。
 したがって、材質に関わらず、構造やギミックに注目して判定してください。
