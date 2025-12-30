@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy, Target } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-// import JSZip from 'jszip'; // 環境依存エラー回避のため削除し、CDNロードに変更
+// import JSZip from 'jszip'; // CDNで読み込むため削除
 
 // ==========================================
 // 定数・設定
@@ -9,9 +9,9 @@ import { initializeApp } from 'firebase/app';
 const FIXED_PASSWORD = 'admin123';
 
 const RISK_MAP = {
-  'Critical': { label: '回収対象(確定)', color: 'bg-orange-100 text-orange-800 border-orange-200 ring-1 ring-orange-300' }, 
-  'High': { label: '要確認(疑いあり)', color: 'bg-amber-100 text-amber-800 border-amber-200' },      
-  'Medium': { label: '一般玩具(除外)', color: 'bg-slate-100 text-slate-500' }, 
+  'Critical': { label: '回収対象(確定)', color: 'bg-rose-100 text-rose-800 border-rose-200 ring-1 ring-rose-300' }, 
+  'High': { label: '要確認(疑いあり)', color: 'bg-orange-100 text-orange-800 border-orange-200' },      
+  'Medium': { label: '玩具銃(広義対象)', color: 'bg-yellow-100 text-yellow-800 border-yellow-200' }, 
   'Low': { label: '対象外', color: 'bg-slate-50 text-slate-300' },
   'Error': { label: '解析エラー', color: 'bg-gray-200 text-gray-800 border-gray-300' }
 };
@@ -113,13 +113,16 @@ async function generateSafetyReport(riskyItems, apiKey, modelId) {
   const itemsText = riskyItems.map(item => `- [${item.risk}] ${item.productName}: ${item.reason}`).join('\n');
   const systemInstruction = `
 あなたはトイガン安全管理の責任者です。
-スクリーニングの結果、検出された以下の危険な玩具銃リストに基づき、社内または関係機関への報告用レポートを作成してください。
+検出された以下の玩具銃リスト（危険なものから一般的なおもちゃまで含む）に基づき、報告書を作成してください。
+
+【報告書のポイント】
+今回の調査では、従来の金属製真正拳銃だけでなく、**「プラスチック製だが実弾発射機能を持つ違法銃」**の可能性も含めてスクリーニングを行いました。
 
 【レポート構成】
-1. **概要**: 検出された危険商品の総数と、Critical/Highの内訳。
-2. **主な検出事項**: 「REAL GIMMICK」シリーズや金属製リボルバーなど、特に注意すべき具体的な商品名の傾向。
-3. **リスク評価**: なぜこれらが危険なのか（銃刀法、実弾発射能力の懸念など）を簡潔に。
-4. **推奨アクション**: 直ちに販売停止、在庫隔離、警察への相談などを指示する内容。
+1. **概要**: 検出総数とリスク別内訳。
+2. **Critical/High分析**: 「REAL GIMMICK」や「撃針機能」を持つ商品、特にプラスチック製でも構造が危険なものの有無。
+3. **Mediumの傾向**: 一般的なおもちゃの銃の検出状況。
+4. **推奨アクション**: 疑わしい商品は材質に関わらず現物確認を行うよう指示。
 
 文体は「報告書」として適切で、簡潔かつ断定的なトーンで作成してください。
 `;
@@ -151,21 +154,35 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
   
   const systemInstruction = `
 あなたは真正拳銃回収スクリーニングシステムです。
-入力データから、警察庁指定の「真正拳銃と認定された玩具銃（全16種類）」に該当する危険な商品を抽出してください。
+入力データから、**「銃」に関連するあらゆるおもちゃ（ガング）**を抽出し、危険度を判定してください。
 
-【対象】
-- "REAL GIMMICK", "MINI REVOLVER", "YUMEYA", "SOPEN" を含む商品
-- 金属製(Full Metal)、薬莢排出、リアル構造を謳う海外製小型リボルバー
+【重要：違法性の判断基準の更新】
+**「金属製」だけが違法の基準ではありません。**
+警察庁の最新情報によると、**「プラスチック製」であっても、撃針（ファイアリングピン）を有し、薬莢の雷管を打撃して発射する機構を持つものは「真正拳銃」として摘発対象**となります。
+したがって、材質に関わらず、構造やギミックに注目して判定してください。
+
+【判定基準】
+1. **🚨 Critical (即回収対象)**: 
+   - キーワード: "REAL GIMMICK", "MINI REVOLVER", "YUMEYA", "SOPEN"
+   - 特徴: **「撃針」「雷管打撃」「薬莢にスプリング内蔵」**等の記述があるもの。
+   - 銃身や弾倉が貫通している構造のもの（プラスチック製含む）。
+
+2. **🔴 High (要確認)**: 
+   - 海外製で詳細な構造が不明なトイガン全般。
+   - 「排莢」「リアルカート」「中折れ式」などのギミックを売りにしているが、安全基準（ASGK等）の明記がないもの。
+   - 材質が不明確だが、実銃に近い構造を示唆しているもの。
+
+3. **🟡 Medium (広義の回収対象 - おもちゃの銃全般)**:
+   - **ここを広く拾ってください。**
+   - キーワード: 「銃」「ガン」「トイガン」「ピストル」「ライフル」「マシンガン」「鉄砲」「エアガン」「モデルガン」「水鉄砲」「吸盤銃」「射的」など。
+   - 子供向けのおもちゃ、国内メーカー品（東京マルイ等）も全てここに含めます。
+
+4. **🟢 Low (対象外)**:
+   - 銃本体ではないもの（ホルスター、BB弾、ターゲット、衣類、ゴーグル等）。
+   - 全く関係ない雑貨、家電、食品。
 
 【出力形式】
-以下のJSON配列フォーマットのみを出力してください。**解説や前置きは一切不要です。**
-[{"id": "ID文字列", "risk_level": "Critical", "reason": "理由"}, ...]
-
-risk_levelは以下のいずれか:
-- Critical: 回収対象（REAL GIMMICK等）
-- High: 要確認（海外製フルメタル等）
-- Medium: 国内安全品（ASGKマーク等）
-- Low: 対象外
+JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", "reason": "理由（例: プラスチック製だが撃針機能の疑いあり）"}, ...]
 `;
 
   const currentModelId = isFallback ? FALLBACK_MODEL : (modelId || DEFAULT_MODEL);
@@ -485,7 +502,7 @@ export default function App() {
   };
 
   const downloadResultCSV = () => {
-    const targetItems = inventory.filter(i => ['Critical', 'High'].includes(i.risk));
+    const targetItems = inventory.filter(i => ['Critical', 'High', 'Medium'].includes(i.risk));
     if (targetItems.length === 0) return alert("抽出されたデータがありません");
     
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
@@ -505,15 +522,15 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.setAttribute("download", `dangerous_guns_list_${new Date().getTime()}.csv`);
+    link.setAttribute("download", `gun_toy_recovery_list_${new Date().getTime()}.csv`);
     document.body.appendChild(link);
     link.click(); 
     document.body.removeChild(link);
   };
 
   const handleGenerateReport = async () => {
-    const displayResults = inventory.filter(i => ['Critical', 'High'].includes(i.risk));
-    if (displayResults.length === 0) return alert("レポート対象となる危険データがありません。");
+    const displayResults = inventory.filter(i => ['Critical', 'High', 'Medium'].includes(i.risk));
+    if (displayResults.length === 0) return alert("レポート対象となるデータがありません。");
     
     if (activeKeys.length === 0) return alert("APIキーがありません。");
     
@@ -602,7 +619,7 @@ export default function App() {
       
       setStatusState(prev => ({
         ...prev,
-        message: `安全チェック進行中... (${currentIndex}/${total}件)`,
+        message: `広域チェック進行中... (${currentIndex}/${total}件)`,
         currentBatch: currentBatchNum,
       }));
 
@@ -636,7 +653,7 @@ export default function App() {
           const chunkResults = await Promise.all(tasks);
           const flatUpdates = chunkResults.flat();
           
-          const dangerousCount = flatUpdates.filter(u => ['Critical', 'High'].includes(u.risk)).length;
+          const dangerousCount = flatUpdates.filter(u => ['Critical', 'High', 'Medium'].includes(u.risk)).length;
           const errorCount = flatUpdates.filter(u => u.risk === 'Error').length;
           
           setStatusState(prev => ({
@@ -690,7 +707,7 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  const displayResults = inventory.filter(i => ['Critical', 'High'].includes(i.risk));
+  const displayResults = inventory.filter(i => ['Critical', 'High', 'Medium'].includes(i.risk));
 
   if (!isAuthenticated) {
     return (
@@ -743,10 +760,10 @@ export default function App() {
                   </div>
                 </div>
                 <div className="p-4 rounded-lg border bg-teal-50 border-teal-200 flex items-center gap-3">
-                  <CheckCircle className="w-5 h-5 text-teal-600" />
+                  <Target className="w-5 h-5 text-teal-600" />
                   <div>
-                    <p className="text-xs text-teal-600 font-bold">発見件数</p>
-                    <p className="text-xl font-bold text-teal-700">{statusState.successCount} <span className="text-xs font-normal text-slate-500">/ 危険</span></p>
+                    <p className="text-xs text-teal-600 font-bold">抽出件数</p>
+                    <p className="text-xl font-bold text-teal-700">{statusState.successCount} <span className="text-xs font-normal text-slate-500">/ 広義対象</span></p>
                   </div>
                 </div>
                 <div className="p-4 rounded-lg border bg-indigo-50 border-indigo-200 flex items-center gap-3">
@@ -822,7 +839,7 @@ export default function App() {
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-[600px]">
               <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
                 <div className="flex items-center gap-3">
-                  <h2 className="font-bold text-slate-700 flex items-center gap-2"><CheckCircle className="w-5 h-5 text-teal-600" /> 検出された危険商品 ({displayResults.length}件)</h2>
+                  <h2 className="font-bold text-slate-700 flex items-center gap-2"><CheckCircle className="w-5 h-5 text-teal-600" /> 検出商品 ({displayResults.length}件)</h2>
                   {displayResults.length > 0 && !isGeneratingReport && (
                     <button onClick={handleGenerateReport} className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-lg flex items-center gap-1 hover:bg-amber-100 font-bold transition-colors">
                       <Sparkles className="w-3 h-3" /> 判定レポート生成
@@ -831,7 +848,7 @@ export default function App() {
                   {isGeneratingReport && <span className="text-xs text-amber-600 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> レポート生成中...</span>}
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={downloadResultCSV} disabled={displayResults.length === 0} className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-sm font-bold flex items-center gap-2 shadow-lg shadow-teal-200 disabled:opacity-50 transition-colors"><Download className="w-4 h-4" /> 回収リストをCSV保存 (元データ付)</button>
+                  <button onClick={downloadResultCSV} disabled={displayResults.length === 0} className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-sm font-bold flex items-center gap-2 shadow-lg shadow-teal-200 disabled:opacity-50 transition-colors"><Download className="w-4 h-4" /> リストをCSV保存 (元データ付)</button>
                 </div>
               </div>
               <div className="flex-1 overflow-auto">
@@ -841,10 +858,10 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {displayResults.length === 0 && !isProcessing && (
-                      <tr><td colSpan="4" className="px-4 py-12 text-center text-slate-400"><CheckCircle className="w-12 h-12 mx-auto mb-2 text-slate-300" /><p>危険な商品は検出されていません。（安全な商品は非表示です）</p></td></tr>
+                      <tr><td colSpan="4" className="px-4 py-12 text-center text-slate-400"><CheckCircle className="w-12 h-12 mx-auto mb-2 text-slate-300" /><p>おもちゃの銃などは検出されていません。（対象外商品は非表示です）</p></td></tr>
                     )}
                     {displayResults.map((item, idx) => (
-                      <tr key={item.id} className={`hover:bg-slate-50 transition-colors ${item.risk === 'Critical' ? 'bg-orange-50' : ''}`}>
+                      <tr key={item.id} className={`hover:bg-slate-50 transition-colors ${item.risk === 'Critical' ? 'bg-orange-50' : item.risk === 'Medium' ? 'bg-yellow-50' : ''}`}>
                         <td className="px-4 py-3 text-center"><RiskBadge risk={item.risk} /></td>
                         <td className="px-4 py-3"><div className="font-medium text-slate-700 line-clamp-2" title={item.productName}>{item.productName}</div></td>
                         <td className="px-4 py-3"><div className="text-xs text-slate-600">{item.reason}</div></td>
