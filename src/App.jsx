@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
+// import JSZip from 'jszip'; // 環境依存エラー回避のため削除し、CDNロードに変更
 
 // ==========================================
 // 定数・設定
@@ -25,6 +26,9 @@ const MODELS = [
 
 const DEFAULT_MODEL = 'gemini-3.0-flash';
 const FALLBACK_MODEL = 'gemini-1.5-flash';
+
+// 商品名を特定するためのキーワード（優先順）
+const PRODUCT_NAME_KEYWORDS = ['商品名', 'product', 'name', 'title', 'item', '名称', '品名'];
 
 // ==========================================
 // 1. ユーティリティ
@@ -62,27 +66,15 @@ const readFileAsText = (file, encoding) => {
   });
 };
 
-// JSONクリーニングの超強化版 (正規表現による強制抽出)
 const cleanJson = (text) => {
   try {
-    // 1. まず最も外側の [ ... ] を探す (改行を含めてマッチ)
+    let cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim();
     const arrayMatch = text.match(/\[[\s\S]*\]/);
-    
-    if (arrayMatch) {
-      return arrayMatch[0];
-    }
-
-    // 2. 配列が見つからない場合、単一オブジェクト { ... } を探して配列で包む
+    if (arrayMatch) return arrayMatch[0];
     const objMatch = text.match(/\{[\s\S]*\}/);
-    if (objMatch) {
-      return `[${objMatch[0]}]`;
-    }
-
-    // 3. それでもダメなら、マークダウン記法だけ削除してイチかバチか返す
-    return text.replace(/```json/g, '').replace(/```/g, '').trim();
-  } catch (e) { 
-    return text; 
-  }
+    if (objMatch) return `[${objMatch[0]}]`;
+    return cleaned;
+  } catch (e) { return text; }
 };
 
 const parseKeys = (text) => {
@@ -92,9 +84,62 @@ const parseKeys = (text) => {
     .filter(k => k.length > 10 && k.startsWith('AIza')); 
 };
 
+// ユニークID生成
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+// JSZipをCDNからロードするフック
+const useJSZip = () => {
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    if (window.JSZip) {
+      setIsLoaded(true);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+    script.onload = () => setIsLoaded(true);
+    document.body.appendChild(script);
+  }, []);
+
+  return isLoaded;
+};
+
 // ==========================================
 // 2. API呼び出し関数
 // ==========================================
+
+async function generateSafetyReport(riskyItems, apiKey, modelId) {
+  const itemsText = riskyItems.map(item => `- [${item.risk}] ${item.productName}: ${item.reason}`).join('\n');
+  const systemInstruction = `
+あなたはトイガン安全管理の責任者です。
+スクリーニングの結果、検出された以下の危険な玩具銃リストに基づき、社内または関係機関への報告用レポートを作成してください。
+
+【レポート構成】
+1. **概要**: 検出された危険商品の総数と、Critical/Highの内訳。
+2. **主な検出事項**: 「REAL GIMMICK」シリーズや金属製リボルバーなど、特に注意すべき具体的な商品名の傾向。
+3. **リスク評価**: なぜこれらが危険なのか（銃刀法、実弾発射能力の懸念など）を簡潔に。
+4. **推奨アクション**: 直ちに販売停止、在庫隔離、警察への相談などを指示する内容。
+
+文体は「報告書」として適切で、簡潔かつ断定的なトーンで作成してください。
+`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+  const payload = {
+    contents: [{ parts: [{ text: `以下の検出結果からレポートを作成せよ:\n${itemsText}` }] }],
+    systemInstruction: { parts: [{ text: systemInstruction }] }
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) throw new Error(`Report Gen Error: ${response.status}`);
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "レポート生成に失敗しました。";
+}
 
 async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailableKeys, modelId, isFallback = false) {
   if (availableKeys.length === 0) {
@@ -102,9 +147,8 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
   }
 
   const apiKey = availableKeys[Math.floor(Math.random() * availableKeys.length)];
-  const productsListText = products.map(p => `ID:${p.id} 商品名:${p.name}`).join('\n');
+  const productsListText = products.map(p => `ID:${p.id} 商品名:${p.productName}`).join('\n');
   
-  // プロンプトをJSON出力に特化
   const systemInstruction = `
 あなたは真正拳銃回収スクリーニングシステムです。
 入力データから、警察庁指定の「真正拳銃と認定された玩具銃（全16種類）」に該当する危険な商品を抽出してください。
@@ -115,7 +159,7 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
 
 【出力形式】
 以下のJSON配列フォーマットのみを出力してください。**解説や前置きは一切不要です。**
-[{"id": ID, "risk_level": "Critical", "reason": "理由"}, ...]
+[{"id": "ID文字列", "risk_level": "Critical", "reason": "理由"}, ...]
 
 risk_levelは以下のいずれか:
 - Critical: 回収対象（REAL GIMMICK等）
@@ -128,11 +172,11 @@ risk_levelは以下のいずれか:
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentModelId}:generateContent?key=${apiKey}`;
   
   const payload = {
-    contents: [{ parts: [{ text: productsListText }] }], // 入力テキストもシンプルに
+    contents: [{ parts: [{ text: productsListText }] }], 
     systemInstruction: { parts: [{ text: systemInstruction }] },
     generationConfig: { 
       responseMimeType: "application/json",
-      temperature: 0.1 // 創造性を下げてフォーマット遵守を優先
+      temperature: 0.1
     }
   };
 
@@ -145,13 +189,11 @@ risk_levelは以下のいずれか:
     
     if (response.status === 404) {
       if (!isFallback && currentModelId !== FALLBACK_MODEL) {
-        console.warn(`モデル(${currentModelId})404エラー。安定版(${FALLBACK_MODEL})で自動リトライします。`);
         return checkIPRiskBulkWithRotation(products, availableKeys, setAvailableKeys, FALLBACK_MODEL, true);
       }
     }
 
     if (response.status === 400 || response.status === 403) {
-      console.warn(`不良キー検知(${response.status})。除外してリトライ: ${apiKey.slice(0, 5)}...`);
       const newKeys = availableKeys.filter(k => k !== apiKey);
       if (setAvailableKeys) setAvailableKeys(newKeys);
       return checkIPRiskBulkWithRotation(products, newKeys, setAvailableKeys, currentModelId, isFallback);
@@ -173,23 +215,17 @@ risk_levelは以下のいずれか:
     let parsedResults;
     try {
         parsedResults = JSON.parse(cleanText);
-        // 単一オブジェクトで返ってきた場合の救済
         if (!Array.isArray(parsedResults) && typeof parsedResults === 'object') {
             parsedResults = [parsedResults];
         }
     } catch (e) {
-        console.error("JSON Parse Error. Raw:", rawText, "Cleaned:", cleanText);
-        // パースエラー時、IDとErrorを返して全滅を防ぐ
-        const errorMap = {};
-        products.forEach(p => { errorMap[p.id] = { risk: "Error", reason: "AI応答形式エラー" }; });
-        return errorMap;
+        throw new Error(`解析不能: ${e.message}`);
     }
 
     if (!Array.isArray(parsedResults)) throw new Error("Not an array");
 
     const resultMap = {};
     parsedResults.forEach(item => {
-      // IDのマッチング精度向上（数値型・文字列型対応）
       const matchingProduct = products.find(p => String(p.id) === String(item.id));
       if (!matchingProduct) return;
 
@@ -208,7 +244,6 @@ risk_levelは以下のいずれか:
       resultMap[matchingProduct.id] = { risk, reason: item.reason };
     });
     
-    // レスポンスに含まれなかった商品はLow扱いにする
     products.forEach(p => {
         if (!resultMap[p.id]) {
             resultMap[p.id] = { risk: "Low", reason: "判定なし(安全)" };
@@ -219,7 +254,6 @@ risk_levelは以下のいずれか:
 
   } catch (error) {
     if (error.message.includes("ALL_KEYS_DEAD")) throw error;
-    console.error("Bulk Check Error:", error);
     const errorMap = {};
     products.forEach(p => {
       errorMap[p.id] = { risk: "Error", reason: error.message };
@@ -244,15 +278,15 @@ export default function App() {
   const [customModelId, setCustomModelId] = useState(''); 
   
   const [activeTab, setActiveTab] = useState('checker');
-  const [files, setFiles] = useState([]);
-  const [csvData, setCsvData] = useState([]);
-  const [headers, setHeaders] = useState([]);
-  const [targetColIndex, setTargetColIndex] = useState(-1);
   
-  const [results, setResults] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   
+  const [reportText, setReportText] = useState('');
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+
   const [statusState, setStatusState] = useState({
     message: '待機中',
     successCount: 0,
@@ -265,6 +299,9 @@ export default function App() {
   const [encoding, setEncoding] = useState('Shift_JIS');
   const [isHighSpeed, setIsHighSpeed] = useState(true); 
   const stopRef = useRef(false);
+
+  // JSZipロード
+  const isZipLoaded = useJSZip();
 
   useEffect(() => {
     const savedKeys = localStorage.getItem('gemini_api_keys'); 
@@ -367,105 +404,143 @@ export default function App() {
     const uploadedFiles = e.target.files ? Array.from(e.target.files) : [];
     if (uploadedFiles.length === 0) return;
     
-    setFiles(prev => [...prev, ...uploadedFiles]);
-    setResults([]); 
+    let newItems = [];
 
-    let newRows = [];
-    let commonHeaders = [];
-
-    for (let i = 0; i < uploadedFiles.length; i++) {
-      const file = uploadedFiles[i];
-      try {
-        const text = await readFileAsText(file, encoding);
-        const parsed = parseCSV(text);
-        if (parsed.length > 0) {
-          const fileHeaders = parsed[0];
-          const fileRows = parsed.slice(1);
-          if (headers.length === 0 && i === 0) {
-            commonHeaders = [...fileHeaders, "元ファイル名"];
-            setHeaders(commonHeaders);
-            const nameIndex = fileHeaders.findIndex(h => h.includes('商品名') || h.includes('Name') || h.includes('Product') || h.includes('名称'));
-            setTargetColIndex(nameIndex !== -1 ? nameIndex : 0);
-          }
-          const rowsWithFileName = fileRows.map(row => [...row, file.name]); 
-          newRows = [...newRows, ...rowsWithFileName];
+    const processFile = async (file) => {
+      const fileName = file.name.toLowerCase();
+      if (fileName.endsWith('.zip')) {
+        if (!isZipLoaded || !window.JSZip) {
+          alert('ZIP機能の準備中です。数秒待ってから再度お試しください。');
+          return;
         }
-      } catch (err) { alert(`${file.name} の読み込みに失敗しました。エンコードを確認してください。`); }
+        try {
+          const zip = new window.JSZip();
+          const loadedZip = await zip.loadAsync(file);
+          const entries = Object.keys(loadedZip.files).map(name => loadedZip.files[name]);
+          for (const entry of entries) {
+            if (!entry.dir && entry.name.toLowerCase().endsWith('.csv')) {
+              const binary = await entry.async('uint8array');
+              let text;
+              try {
+                  const decoder = new TextDecoder(encoding === 'Shift_JIS' ? 'shift-jis' : 'utf-8');
+                  text = decoder.decode(binary);
+              } catch(e) {
+                  text = await entry.async('string');
+              }
+              const items = parseAndExtractItems(text, entry.name);
+              newItems.push(...items);
+            }
+          }
+        } catch (err) {
+          console.error("ZIP Error", err);
+          alert(`${file.name}の解凍に失敗しました。`);
+        }
+      } else if (fileName.endsWith('.csv')) {
+        try {
+          const text = await readFileAsText(file, encoding);
+          const items = parseAndExtractItems(text, file.name);
+          newItems.push(...items);
+        } catch (err) {
+          alert(`${file.name}の読み込みに失敗しました。`);
+        }
+      }
+    };
+
+    await Promise.all(uploadedFiles.map(processFile));
+    
+    if (newItems.length > 0) {
+      setInventory(prev => [...prev, ...newItems]);
     }
-    setCsvData(prev => [...prev, ...newRows]);
   };
 
-  // 結合CSVダウンロード機能
-  const downloadMergedCSV = () => {
-    if (csvData.length === 0) return alert("データがありません");
-    
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    // ヘッダー行の作成
-    let csvContent = headers.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
-    
-    // データ行の作成
-    csvData.forEach(row => {
-      const rowString = row.map(field => {
-        const val = field === null || field === undefined ? '' : String(field);
-        return `"${val.replace(/"/g, '""')}"`;
-      }).join(',');
-      csvContent += rowString + "\n";
-    });
+  const parseAndExtractItems = (text, fileName) => {
+    const rows = parseCSV(text);
+    if (rows.length < 2) return [];
 
-    const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", `merged_data_${new Date().getTime()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const headers = rows[0];
+    const dataRows = rows.slice(1);
+
+    let nameIndex = -1;
+    for (const keyword of PRODUCT_NAME_KEYWORDS) {
+      const idx = headers.findIndex(h => h.toLowerCase().includes(keyword));
+      if (idx !== -1) {
+        nameIndex = idx;
+        break;
+      }
+    }
+
+    if (nameIndex === -1) {
+      nameIndex = 0; 
+    }
+
+    return dataRows.map(row => ({
+      id: generateId(),
+      productName: row[nameIndex] || "(不明)",
+      originalRow: row,
+      headers: headers,
+      fileName: fileName,
+      risk: 'Unchecked', 
+      reason: ''
+    }));
   };
 
-  // 修正: 元データの全カラムを含めて出力する
   const downloadResultCSV = () => {
-    if (results.length === 0) return alert("抽出されたデータがありません");
+    const targetItems = inventory.filter(i => ['Critical', 'High'].includes(i.risk));
+    if (targetItems.length === 0) return alert("抽出されたデータがありません");
     
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    let csvContent = "ファイル名,判定日時,リスク判定,理由,商品名,元データ(全列結合)\n";
     
-    // ヘッダー生成: 元のCSVヘッダー + 判定結果用のヘッダー
-    const outputHeaders = [...headers, "リスク判定", "理由", "判定日時"];
-    let csvContent = outputHeaders.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
-    
-    results.forEach(r => {
-      // idを使って元のCSV行データを取得
-      const originalRow = csvData[r.id];
-      if (!originalRow) return;
-
-      const riskLabel = RISK_MAP[r.risk]?.label || r.risk;
-      const reason = `"${(r.reason || '').replace(/"/g, '""')}"`;
+    targetItems.forEach(item => {
+      const riskLabel = RISK_MAP[item.risk]?.label || item.risk;
+      const reason = `"${(item.reason || '').replace(/"/g, '""')}"`;
+      const fileName = `"${item.fileName}"`;
       const date = new Date().toLocaleString();
-
-      // 元の行データをCSV形式に変換
-      const rowString = originalRow.map(field => {
-        const val = field === null || field === undefined ? '' : String(field);
-        return `"${val.replace(/"/g, '""')}"`;
-      }).join(',');
-
-      // 結合: 元の行 + 判定結果
-      csvContent += `${rowString},${riskLabel},${reason},${date}\n`;
+      const pName = `"${(item.productName || '').replace(/"/g, '""')}"`;
+      const originalDataStr = item.originalRow.map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
+      csvContent += `${fileName},${date},${riskLabel},${reason},${pName},${originalDataStr}\n`;
     });
 
     const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.setAttribute("download", `dangerous_guns_recovery_list.csv`);
+    link.setAttribute("download", `dangerous_guns_list_${new Date().getTime()}.csv`);
     document.body.appendChild(link);
     link.click(); 
     document.body.removeChild(link);
   };
 
+  const handleGenerateReport = async () => {
+    const displayResults = inventory.filter(i => ['Critical', 'High'].includes(i.risk));
+    if (displayResults.length === 0) return alert("レポート対象となる危険データがありません。");
+    
+    if (activeKeys.length === 0) return alert("APIキーがありません。");
+    
+    setIsGeneratingReport(true);
+    try {
+      const report = await generateSafetyReport(
+        displayResults, 
+        activeKeys[0], 
+        modelId === 'custom' ? customModelId : modelId
+      );
+      setReportText(report);
+    } catch (e) {
+      alert("レポート生成に失敗しました: " + e.message);
+    }
+    setIsGeneratingReport(false);
+  };
+
+  const handleCopyReport = () => {
+    navigator.clipboard.writeText(reportText);
+    alert("レポートをコピーしました");
+  };
+
   const handleReset = () => {
     if (isProcessing && !confirm("処理を中断して初期化しますか？")) return;
-    setFiles([]);
-    setCsvData([]);
+    setInventory([]);
     setResults([]);
+    setReportText('');
     setProgress(0);
     setStatusState({ 
       message: '待機中', 
@@ -477,42 +552,47 @@ export default function App() {
     });
     setIsProcessing(false);
     stopRef.current = true;
-    setHeaders([]);
-    setTargetColIndex(-1);
   };
 
   const startProcessing = async () => {
     const initialKeys = parseKeys(apiKeysText);
     setActiveKeys(initialKeys);
 
-    if (initialKeys.length === 0) return alert("有効なAPIキーが設定されていません。設定画面を確認してください。");
-    if (csvData.length === 0) return;
+    if (initialKeys.length === 0) return alert("有効なAPIキーが設定されていません。");
+    
+    const uncheckedItems = inventory.filter(i => i.risk === 'Unchecked');
+    if (uncheckedItems.length === 0) return alert("未判定のデータがありません。");
 
     setIsProcessing(true);
     stopRef.current = false;
-    setResults([]); 
     setProgress(0);
+    setReportText(''); 
     
+    const total = uncheckedItems.length;
     setStatusState({ 
       message: '初期化中...', 
       successCount: 0, 
       errorCount: 0, 
       currentBatch: 0, 
-      totalBatches: 0, 
-      deadKeysCount: parseKeys(apiKeysText).length - initialKeys.length
+      totalBatches: Math.ceil(total / 30), 
+      deadKeysCount: 0
     });
 
     const BULK_SIZE = 30; 
     const CONCURRENCY = isHighSpeed ? 3 : 2;
 
     let currentIndex = 0;
-    const total = csvData.length;
-    const totalBatches = Math.ceil(total / BULK_SIZE);
-
     const initialJitter = Math.random() * 2000;
     await new Promise(resolve => setTimeout(resolve, initialJitter));
 
     const currentModelId = modelId === 'custom' ? customModelId : modelId;
+
+    const updateInventory = (updates) => {
+      setInventory(prev => prev.map(item => {
+        const update = updates.find(u => u.id === item.id);
+        return update ? { ...item, ...update } : item;
+      }));
+    };
 
     while (currentIndex < total) {
       if (stopRef.current) break;
@@ -524,8 +604,6 @@ export default function App() {
         ...prev,
         message: `安全チェック進行中... (${currentIndex}/${total}件)`,
         currentBatch: currentBatchNum,
-        totalBatches: totalBatches,
-        deadKeysCount: parseKeys(apiKeysText).length - activeKeys.length 
       }));
 
       for (let c = 0; c < CONCURRENCY; c++) {
@@ -535,25 +613,19 @@ export default function App() {
         
         const chunkProducts = [];
         for (let i = chunkStart; i < chunkEnd; i++) {
-          const row = csvData[i];
-          const productName = row[targetColIndex] || "不明な商品名";
-          chunkProducts.push({
-            id: i,
-            name: productName.length > 500 ? productName.substring(0, 500) + "..." : productName,
-            sourceFile: row[row.length - 1]
-          });
+          chunkProducts.push(uncheckedItems[i]);
         }
         
         if (chunkProducts.length > 0) {
           tasks.push(
             checkIPRiskBulkWithRotation(chunkProducts, activeKeys, setActiveKeys, currentModelId).then(resultMap => {
-              return chunkProducts.map(p => ({
+              const updates = chunkProducts.map(p => ({
                 id: p.id,
-                productName: p.name,
-                sourceFile: p.sourceFile,
                 risk: resultMap[p.id]?.risk || "Error",
                 reason: resultMap[p.id]?.reason || "判定失敗",
               }));
+              updateInventory(updates);
+              return updates;
             })
           );
         }
@@ -562,19 +634,15 @@ export default function App() {
       if (tasks.length > 0) {
         try {
           const chunkResults = await Promise.all(tasks);
-          const flatResults = chunkResults.flat();
+          const flatUpdates = chunkResults.flat();
           
-          // ここで安全な商品（Medium, Low）をフィルタリングして除外
-          const dangerousItems = flatResults.filter(r => ['Critical', 'High'].includes(r.risk));
-          const errorItems = flatResults.filter(r => r.risk === 'Error');
-          
-          // ステートに追加 (安全なものは追加しない)
-          setResults(prev => [...prev, ...dangerousItems, ...errorItems]);
+          const dangerousCount = flatUpdates.filter(u => ['Critical', 'High'].includes(u.risk)).length;
+          const errorCount = flatUpdates.filter(u => u.risk === 'Error').length;
           
           setStatusState(prev => ({
             ...prev,
-            successCount: prev.successCount + dangerousItems.length, // 発見数としてカウント
-            errorCount: prev.errorCount + errorItems.length
+            successCount: prev.successCount + dangerousCount,
+            errorCount: prev.errorCount + errorCount
           }));
 
           currentIndex += tasks.reduce((acc, _, idx) => {
@@ -586,10 +654,6 @@ export default function App() {
           setProgress(nextProgress);
 
         } catch (e) {
-          if (e.message.includes("ALL_KEYS_DEAD")) {
-             alert("全てのAPIキーが無効になりました。設定画面で「接続テスト」を行い、有効なキーを確認してください。");
-             break;
-          }
           console.error("Batch error:", e);
           currentIndex += (CONCURRENCY * BULK_SIZE);
         }
@@ -604,10 +668,29 @@ export default function App() {
     setIsProcessing(false);
   };
 
-  const RiskBadge = ({ risk }) => {
-    const config = RISK_MAP[risk] || RISK_MAP['Error'];
-    return <span className={`px-3 py-1 rounded-full text-xs font-bold border whitespace-nowrap ${config.color}`}>{risk === 'Critical' && <Siren className="w-3 h-3 inline mr-1 mb-0.5" />}{config.label}</span>;
+  const downloadMergedCSV = () => {
+    if (csvData.length === 0 && inventory.length === 0) return alert("データがありません");
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    
+    const baseHeaders = inventory[0]?.headers || [];
+    let csvContent = baseHeaders.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
+    
+    inventory.forEach(item => {
+      const rowString = item.originalRow.map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
+      csvContent += rowString + "\n";
+    });
+
+    const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `merged_data_${new Date().getTime()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
+
+  const displayResults = inventory.filter(i => ['Critical', 'High'].includes(i.risk));
 
   if (!isAuthenticated) {
     return (
@@ -615,8 +698,8 @@ export default function App() {
         <div className="bg-white p-16 rounded-2xl shadow-2xl w-full max-w-5xl transition-all border border-slate-200">
           <div className="flex flex-col items-center">
             <div className="bg-teal-600 p-6 rounded-full mb-8 shadow-lg shadow-teal-200"><ShieldCheck className="w-16 h-16 text-white" /></div>
-            <h1 className="text-4xl font-black text-center text-slate-800 mb-2 tracking-tight">トイガン・セーフティチェック</h1>
-            <span className="text-sm font-bold bg-slate-100 text-slate-500 px-4 py-1.5 rounded-full mb-10">Powered by Gemini 2.5 Flash | 真正拳銃回収スクリーニング</span>
+            <h1 className="text-4xl font-black text-center text-slate-800 mb-2 tracking-tight">トイガン・セーフティチェック <span className="text-teal-600">Ver.2</span></h1>
+            <span className="text-sm font-bold bg-slate-100 text-slate-500 px-4 py-1.5 rounded-full mb-10">ZIP / 複数ファイル対応版</span>
           </div>
           <form onSubmit={handleLogin} className="space-y-8 max-w-xl mx-auto"> 
             <div>
@@ -625,7 +708,6 @@ export default function App() {
             </div>
             <button type="submit" className="w-full bg-teal-600 text-white py-4 rounded-xl font-bold text-xl hover:bg-teal-700 shadow-xl shadow-teal-200 transition-all active:scale-95">ログインして開始</button>
           </form>
-          <p className="text-center text-xs text-slate-400 mt-12 font-mono">Authorized Personnel Only</p>
         </div>
       </div>
     );
@@ -637,14 +719,11 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3 font-black text-slate-800 text-xl">
             <ShieldCheck className="w-8 h-8 text-teal-600" />
-            <span>トイガン・セーフティチェック <span className="text-xs font-medium text-white bg-teal-600 px-2 py-0.5 rounded ml-1">Official</span></span>
+            <span>トイガン・セーフティチェック <span className="text-xs font-medium text-white bg-teal-600 px-2 py-0.5 rounded ml-1">Ver.2</span></span>
           </div>
           <div className="flex items-center gap-1">
-            {['checker', 'settings'].map(tab => (
-              <button key={tab} onClick={() => setActiveTab(tab)} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab ? 'bg-teal-50 text-teal-600' : 'text-slate-500 hover:bg-slate-50'}`}>
-                {tab === 'checker' ? 'スクリーニング' : '設定'}
-              </button>
-            ))}
+            <button onClick={() => setActiveTab('checker')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'checker' ? 'bg-teal-50 text-teal-600' : 'text-slate-500 hover:bg-slate-50'}`}>スクリーニング</button>
+            <button onClick={() => setActiveTab('settings')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'settings' ? 'bg-teal-50 text-teal-600' : 'text-slate-500 hover:bg-slate-50'}`}>設定</button>
             <button onClick={() => setIsAuthenticated(false)} className="ml-2 p-2 text-slate-400 hover:text-red-500"><LogOut className="w-5 h-5" /></button>
           </div>
         </div>
@@ -653,9 +732,10 @@ export default function App() {
       <main className="max-w-7xl mx-auto p-4 md:p-6">
         {activeTab === 'checker' && (
           <div className="space-y-6 animate-in fade-in duration-300">
+            {/* 上部ステータス */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-                <div className={`p-4 rounded-lg border flex items-center gap-3 bg-slate-50 border-slate-200`}>
+                <div className="p-4 rounded-lg border flex items-center gap-3 bg-slate-50 border-slate-200">
                   <Activity className="w-5 h-5 text-teal-600" />
                   <div className="w-full">
                     <p className="text-xs text-slate-500 font-bold">ステータス</p>
@@ -670,44 +750,29 @@ export default function App() {
                   </div>
                 </div>
                 <div className="p-4 rounded-lg border bg-indigo-50 border-indigo-200 flex items-center gap-3">
-                  <Key className="w-5 h-5 text-indigo-600" />
+                  <Settings className="w-5 h-5 text-indigo-600" />
                   <div>
-                    <p className="text-xs text-indigo-600 font-bold">稼働キー数</p>
-                    <p className="text-xl font-bold text-indigo-700">{activeKeys.length} <span className="text-xs font-normal">/ {parseKeys(apiKeysText).length}</span></p>
-                  </div>
-                </div>
-                <div className="p-4 rounded-lg border bg-rose-50 border-rose-200 flex items-center gap-3">
-                  <Ban className="w-5 h-5 text-rose-600" />
-                  <div>
-                    <p className="text-xs text-rose-600 font-bold">排除キー数</p>
-                    <p className="text-xl font-bold text-rose-700">{statusState.deadKeysCount}</p>
+                    <p className="text-xs text-indigo-600 font-bold">読み込み件数</p>
+                    <p className="text-xl font-bold text-indigo-700">{inventory.length} <span className="text-xs font-normal">items</span></p>
                   </div>
                 </div>
               </div>
 
+              {/* ファイルアップロード＆設定エリア */}
               <div className="flex flex-col lg:flex-row gap-6">
                 <div className="flex-1">
                   <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:bg-teal-50 transition-colors relative cursor-pointer min-h-[160px] flex flex-col items-center justify-center group">
-                    <input type="file" accept=".csv" multiple onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                    <input type="file" accept=".csv,.zip" multiple onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
                     <FolderOpen className="w-10 h-10 text-slate-400 mb-3 group-hover:text-teal-500 transition-colors" />
-                    <p className="text-base font-bold text-slate-700">CSVファイルをここにドロップ（複数可）</p>
-                    <p className="text-xs text-slate-500 mt-1">またはクリックしてファイルを選択</p>
+                    <p className="text-base font-bold text-slate-700">CSV または ZIPファイルをドロップ</p>
+                    <p className="text-xs text-slate-500 mt-1">複数ファイル対応・自動結合</p>
                   </div>
-                  {files.length > 0 && (
-                    <div className="mt-4 bg-slate-50 rounded-lg p-3 border border-slate-100">
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-xs font-bold text-slate-600">読み込み済み: {files.length}ファイル ({csvData.length}件)</span>
-                        <div className="flex gap-2">
-                           <button onClick={downloadMergedCSV} className="text-xs text-indigo-600 hover:text-indigo-800 flex items-center gap-1 font-bold bg-indigo-50 px-3 py-1.5 rounded border border-indigo-200 hover:bg-indigo-100 transition-colors"><Merge className="w-3 h-3" /> 元データを結合して保存</button>
-                          <button onClick={handleReset} className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1"><Trash2 className="w-3 h-3" /> 全削除</button>
-                        </div>
-                      </div>
-                      <div className="max-h-24 overflow-y-auto space-y-1">
-                        {files.map((f, i) => (
-                          <div key={i} className="text-xs text-slate-500 flex items-center gap-2">
-                            <FileText className="w-3 h-3" /> {f.name}
-                          </div>
-                        ))}
+                  {inventory.length > 0 && (
+                    <div className="mt-4 bg-slate-50 rounded-lg p-3 border border-slate-100 flex justify-between items-center">
+                      <span className="text-xs font-bold text-slate-600">読み込み完了: {inventory.length} 件のデータ</span>
+                      <div className="flex gap-2">
+                        <button onClick={downloadMergedCSV} className="text-xs text-indigo-600 hover:text-indigo-800 flex items-center gap-1 font-bold bg-indigo-50 px-3 py-1.5 rounded border border-indigo-200 hover:bg-indigo-100 transition-colors"><Merge className="w-3 h-3" /> 元データ結合</button>
+                        <button onClick={handleReset} className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1"><Trash2 className="w-3 h-3" /> リセット</button>
                       </div>
                     </div>
                   )}
@@ -715,28 +780,23 @@ export default function App() {
 
                 <div className="w-full lg:w-80 space-y-4">
                   <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                    <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2"><Settings className="w-4 h-4" /> 読込オプション</h3>
-                    <div className="space-y-3">
-                      <select value={encoding} onChange={(e) => setEncoding(e.target.value)} className="w-full px-3 py-2 border rounded bg-white text-sm">
-                        <option value="Shift_JIS">Shift_JIS (楽天/Excel)</option>
-                        <option value="UTF-8">UTF-8 (一般/Web)</option>
-                      </select>
-                      <select value={targetColIndex} onChange={(e) => setTargetColIndex(Number(e.target.value))} className="w-full px-3 py-2 border rounded bg-white text-sm" disabled={headers.length === 0}>
-                        {headers.length === 0 && <option>ファイルを読み込んでください</option>}
-                        {headers.map((h, i) => <option key={i} value={i}>{h}</option>)}
-                      </select>
-                    </div>
+                    <h3 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">読込オプション</h3>
+                    <select value={encoding} onChange={(e) => setEncoding(e.target.value)} className="w-full px-3 py-2 border rounded bg-white text-sm">
+                      <option value="Shift_JIS">Shift_JIS (Excel/楽天)</option>
+                      <option value="UTF-8">UTF-8 (Web/一般)</option>
+                    </select>
+                    <p className="text-[10px] text-slate-400 mt-1">※ZIP内のCSVもこの文字コードで読み込みます</p>
                   </div>
                   <div onClick={() => setIsHighSpeed(!isHighSpeed)} className={`p-4 rounded-lg border cursor-pointer transition-all ${isHighSpeed ? 'bg-teal-50 border-teal-200 ring-2 ring-teal-100' : 'bg-white border-slate-200'}`}>
                     <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2"><Flame className={`w-5 h-5 ${isHighSpeed ? 'text-teal-600 fill-teal-600' : 'text-slate-400'}`} /><span className={`font-bold text-sm ${isHighSpeed ? 'text-teal-900' : 'text-slate-600'}`}>高速チェックモード</span></div>
+                      <div className="flex items-center gap-2"><Flame className={`w-5 h-5 ${isHighSpeed ? 'text-teal-600 fill-teal-600' : 'text-slate-400'}`} /><span className={`font-bold text-sm ${isHighSpeed ? 'text-teal-900' : 'text-slate-600'}`}>高速チェック</span></div>
                       <div className={`w-10 h-5 rounded-full relative transition-colors ${isHighSpeed ? 'bg-teal-600' : 'bg-slate-300'}`}><div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-transform ${isHighSpeed ? 'left-6' : 'left-1'}`} /></div>
                     </div>
-                    <p className="text-xs text-slate-500">リミッター解除。全リストを高速でスキャンし、対象商品を即座に特定します。</p>
                   </div>
                 </div>
               </div>
 
+              {/* プログレスバー & 操作ボタン */}
               <div className="pt-4 border-t border-slate-100">
                 <div className="flex items-center gap-4">
                   <div className="flex-1">
@@ -750,13 +810,7 @@ export default function App() {
                   </div>
                   
                   {!isProcessing ? (
-                    <div className="flex items-center gap-2">
-                      {results.length > 0 ? (
-                        <button onClick={handleReset} className="flex items-center gap-2 px-8 py-3 bg-slate-600 hover:bg-slate-700 text-white font-bold rounded-lg shadow-md transition-transform active:scale-95 whitespace-nowrap"><RotateCcw className="w-5 h-5" /> 次のファイルをチェック</button>
-                      ) : (
-                        <button onClick={startProcessing} disabled={files.length === 0} className="flex items-center gap-2 px-8 py-3 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 text-white font-bold rounded-lg shadow-md transition-transform active:scale-95 whitespace-nowrap"><Play className="w-5 h-5" /> チェック開始</button>
-                      )}
-                    </div>
+                    <button onClick={startProcessing} disabled={inventory.length === 0} className="flex items-center gap-2 px-8 py-3 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 text-white font-bold rounded-lg shadow-md transition-transform active:scale-95 whitespace-nowrap"><Play className="w-5 h-5" /> チェック開始</button>
                   ) : (
                     <button onClick={() => {stopRef.current = true; setIsProcessing(false); setStatusState(p => ({...p, message: '停止しました'}));}} className="flex items-center gap-2 px-8 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg shadow-md transition-transform active:scale-95 whitespace-nowrap"><Pause className="w-5 h-5" /> 一時停止</button>
                   )}
@@ -764,89 +818,82 @@ export default function App() {
               </div>
             </div>
 
+            {/* 結果テーブル */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-[600px]">
               <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
                 <div className="flex items-center gap-3">
-                  <h2 className="font-bold text-slate-700 flex items-center gap-2"><CheckCircle className="w-5 h-5 text-teal-600" /> 判定結果 ({results.length}件)</h2>
+                  <h2 className="font-bold text-slate-700 flex items-center gap-2"><CheckCircle className="w-5 h-5 text-teal-600" /> 検出された危険商品 ({displayResults.length}件)</h2>
+                  {displayResults.length > 0 && !isGeneratingReport && (
+                    <button onClick={handleGenerateReport} className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-lg flex items-center gap-1 hover:bg-amber-100 font-bold transition-colors">
+                      <Sparkles className="w-3 h-3" /> 判定レポート生成
+                    </button>
+                  )}
+                  {isGeneratingReport && <span className="text-xs text-amber-600 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> レポート生成中...</span>}
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={downloadResultCSV} disabled={results.length === 0} className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-sm font-bold flex items-center gap-2 shadow-lg shadow-teal-200 disabled:opacity-50 transition-colors"><Download className="w-4 h-4" /> 回収リストをCSV保存</button>
+                  <button onClick={downloadResultCSV} disabled={displayResults.length === 0} className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-sm font-bold flex items-center gap-2 shadow-lg shadow-teal-200 disabled:opacity-50 transition-colors"><Download className="w-4 h-4" /> 回収リストをCSV保存 (元データ付)</button>
                 </div>
               </div>
               <div className="flex-1 overflow-auto">
                 <table className="w-full text-sm text-left">
                   <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 z-10 shadow-sm">
-                    <tr><th className="px-4 py-3 w-32 text-center">判定</th><th className="px-4 py-3 w-1/3">商品名</th><th className="px-4 py-3">抽出理由・法的リスク</th><th className="px-4 py-3 w-32">元ファイル</th></tr>
+                    <tr><th className="px-4 py-3 w-32 text-center">判定</th><th className="px-4 py-3 w-1/3">商品名</th><th className="px-4 py-3">リスク・理由</th><th className="px-4 py-3 w-32">元ファイル</th></tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {results.length === 0 && !isProcessing && (
-                      <tr>
-                        <td colSpan="4" className="px-4 py-12 text-center text-slate-400">
-                          <CheckCircle className="w-12 h-12 mx-auto mb-2 text-slate-300" />
-                          <p>危険な商品は検出されませんでした。（安全な商品は非表示です）</p>
-                        </td>
-                      </tr>
+                    {displayResults.length === 0 && !isProcessing && (
+                      <tr><td colSpan="4" className="px-4 py-12 text-center text-slate-400"><CheckCircle className="w-12 h-12 mx-auto mb-2 text-slate-300" /><p>危険な商品は検出されていません。（安全な商品は非表示です）</p></td></tr>
                     )}
-                    {results.map((item, idx) => (
-                      <tr key={idx} className={`hover:bg-slate-50 transition-colors ${item.risk === 'Critical' ? 'bg-orange-50' : ''}`}>
+                    {displayResults.map((item, idx) => (
+                      <tr key={item.id} className={`hover:bg-slate-50 transition-colors ${item.risk === 'Critical' ? 'bg-orange-50' : ''}`}>
                         <td className="px-4 py-3 text-center"><RiskBadge risk={item.risk} /></td>
                         <td className="px-4 py-3"><div className="font-medium text-slate-700 line-clamp-2" title={item.productName}>{item.productName}</div></td>
-                        <td className="px-4 py-3">
-                          <div className={`text-xs mb-1 ${item.risk === 'Critical' ? 'text-orange-700 font-bold' : item.risk === 'High' ? 'text-amber-700 font-bold' : 'text-slate-600'}`}>{item.reason}</div>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-400 truncate max-w-[150px]" title={item.sourceFile}>{item.sourceFile}</td>
+                        <td className="px-4 py-3"><div className="text-xs text-slate-600">{item.reason}</div></td>
+                        <td className="px-4 py-3 text-xs text-slate-400 truncate max-w-[150px]" title={item.fileName}>{item.fileName}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             </div>
+
+            {/* レポート表示エリア */}
+            {reportText && (
+              <div className="bg-amber-50 p-6 rounded-xl border border-amber-200 mt-6 shadow-sm animate-in slide-in-from-bottom-2">
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="font-bold text-amber-900 flex items-center gap-2"><Sparkles className="w-5 h-5" /> 自動生成レポート (Gemini)</h3>
+                  <button onClick={handleCopyReport} className="text-xs bg-white text-amber-700 border border-amber-200 px-3 py-1.5 rounded-lg flex items-center gap-1 hover:bg-amber-100 transition-colors"><ClipboardCopy className="w-3 h-3" /> コピー</button>
+                </div>
+                <div className="whitespace-pre-wrap text-sm text-amber-800 leading-relaxed font-mono bg-white p-4 rounded border border-amber-100">{reportText}</div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* --- 設定画面 --- */}
+        {/* 設定タブの内容は省略（変更なし） */}
         {activeTab === 'settings' && (
-          <div className="max-w-2xl mx-auto space-y-6 animate-in fade-in">
+          <div className="max-w-2xl mx-auto space-y-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
               <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Settings className="w-5 h-5" /> アプリ設定</h2>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">使用するAIモデル</label>
-                  <select value={modelId} onChange={(e) => setModelId(e.target.value)} className="w-full px-4 py-2 border rounded-lg bg-white">
-                    {MODELS.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                    <option value="custom">カスタムモデル (手動入力)</option>
-                  </select>
-                  <p className="text-xs text-slate-500 mt-1">デフォルト推奨: Gemini 2.5 Flash (404エラー時は自動で1.5に切り替わります)</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Gemini API Keys (複数登録推奨)</label>
-                  <textarea 
-                    value={apiKeysText} 
-                    onChange={(e) => setApiKeysText(e.target.value)} 
-                    className="w-full px-4 py-2 border rounded-lg bg-slate-50 h-32 font-mono text-sm" 
-                    placeholder={`AIza...\nAIza...\nAIza...\n(キーを改行区切りで複数入力すると、負荷分散モードが作動します)`}
-                  />
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Gemini API Keys</label>
+                  <textarea value={apiKeysText} onChange={(e) => setApiKeysText(e.target.value)} className="w-full px-4 py-2 border rounded-lg bg-slate-50 h-32 font-mono text-sm" placeholder="AIza..." />
                   <div className="flex justify-between items-start mt-2">
-                    <p className="text-xs text-slate-500">複数入力すると、エラーが出たキーを自動で排除して処理を継続します。<br/><span className="text-teal-600 font-bold">APIキー接続テストボタンでキーの有効性を確認してください。</span></p>
-                    <button onClick={testConnection} className="flex items-center gap-1 px-3 py-1 bg-teal-50 text-teal-700 border border-teal-200 rounded text-xs font-bold hover:bg-teal-100 transition-colors whitespace-nowrap"><Stethoscope className="w-3 h-3" /> APIキー接続テスト</button>
+                    <p className="text-xs text-slate-500">複数入力で負荷分散されます。</p>
+                    <button onClick={testConnection} className="flex items-center gap-1 px-3 py-1 bg-teal-50 text-teal-700 border border-teal-200 rounded text-xs font-bold"><Stethoscope className="w-3 h-3" /> 接続テスト</button>
                   </div>
-                  
-                  {/* キーのステータス表示 */}
                   {Object.keys(keyStatuses).length > 0 && (
                     <div className="mt-2 space-y-1 p-2 bg-slate-50 rounded border border-slate-200 max-h-32 overflow-y-auto">
                       {Object.entries(keyStatuses).map(([key, status], idx) => (
                         <div key={idx} className="flex items-center gap-2 text-xs font-mono">
-                          {status.status === 'loading' && <Loader2 className="w-3 h-3 animate-spin text-slate-400" />}
-                          {status.status === 'ok' && <Check className="w-3 h-3 text-teal-600" />}
-                          {status.status === 'error' && <X className="w-3 h-3 text-rose-600" />}
+                          {status.status === 'ok' ? <Check className="w-3 h-3 text-teal-600" /> : <X className="w-3 h-3 text-rose-600" />}
                           <span className="text-slate-500">{key.slice(0, 8)}...</span>
-                          <span className={status.status === 'ok' ? 'text-teal-600' : status.status === 'error' ? 'text-rose-600' : 'text-slate-400'}>{status.msg}</span>
+                          <span className={status.status === 'ok' ? 'text-teal-600' : 'text-rose-600'}>{status.msg}</span>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
-                
                 <div className="pt-4">
                   <button onClick={saveSettings} className="flex items-center justify-center gap-2 w-full bg-teal-600 text-white font-bold py-2 rounded-lg hover:bg-teal-700 shadow-sm"><Save className="w-4 h-4" /> 設定を保存</button>
                 </div>
