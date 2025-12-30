@@ -332,7 +332,13 @@ export default function App() {
       setActiveKeys(parseKeys(savedKeys));
     }
 
-    if (savedModel) setModelId(savedModel);
+    // 以前の保存モデルが現在のモデルリストにない場合（2.5 Flashなど）はデフォルト(1.5)に戻す
+    if (savedModel && MODELS.some(m => m.id === savedModel)) {
+      setModelId(savedModel);
+    } else {
+      setModelId(DEFAULT_MODEL);
+    }
+
     if (savedCustomModel) setCustomModelId(savedCustomModel);
     
     if (savedFbConfig) {
