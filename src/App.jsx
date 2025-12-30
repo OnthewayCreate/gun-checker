@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy, Target } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy, Target, Eye } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 // import JSZip from 'jszip'; // CDNで読み込むため削除
 
@@ -156,7 +156,7 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
 あなたは真正拳銃回収スクリーニングシステムです。
 入力データから、**「銃」に関連するあらゆるおもちゃ（ガング）**を抽出し、危険度を判定してください。
 
-【重要：違法性の判断基準の更新】
+【重要：違法性の判断基準の厳格化】
 **「金属製」だけが違法の基準ではありません。**
 警察庁の最新情報によると、**「プラスチック製」であっても、撃針（ファイアリングピン）を有し、薬莢の雷管を打撃して発射する機構を持つものは「真正拳銃」として摘発対象**となります。
 したがって、材質に関わらず、構造やギミックに注目して判定してください。
@@ -296,7 +296,12 @@ export default function App() {
   
   const [activeTab, setActiveTab] = useState('checker');
   
+  // データ管理用ステート
+  // inventory: 読み込んだ全データ
+  // { id, productName, originalRow, headers, fileName, risk, reason, status, detectedColumn }
   const [inventory, setInventory] = useState([]);
+  // ファイルごとのメタデータ（プレビュー用）
+  const [fileMeta, setFileMeta] = useState([]);
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -422,6 +427,7 @@ export default function App() {
     if (uploadedFiles.length === 0) return;
     
     let newItems = [];
+    let newFileMeta = [];
 
     const processFile = async (file) => {
       const fileName = file.name.toLowerCase();
@@ -444,8 +450,9 @@ export default function App() {
               } catch(e) {
                   text = await entry.async('string');
               }
-              const items = parseAndExtractItems(text, entry.name);
+              const { items, meta } = parseAndExtractItems(text, entry.name);
               newItems.push(...items);
+              newFileMeta.push(meta);
             }
           }
         } catch (err) {
@@ -455,8 +462,9 @@ export default function App() {
       } else if (fileName.endsWith('.csv')) {
         try {
           const text = await readFileAsText(file, encoding);
-          const items = parseAndExtractItems(text, file.name);
+          const { items, meta } = parseAndExtractItems(text, file.name);
           newItems.push(...items);
+          newFileMeta.push(meta);
         } catch (err) {
           alert(`${file.name}の読み込みに失敗しました。`);
         }
@@ -467,38 +475,72 @@ export default function App() {
     
     if (newItems.length > 0) {
       setInventory(prev => [...prev, ...newItems]);
+      setFileMeta(prev => [...prev, ...newFileMeta]);
     }
   };
 
   const parseAndExtractItems = (text, fileName) => {
     const rows = parseCSV(text);
-    if (rows.length < 2) return [];
+    if (rows.length < 2) return { items: [], meta: { fileName, detectedColumn: "データなし", sample: "-" } };
 
     const headers = rows[0];
     const dataRows = rows.slice(1);
 
     let nameIndex = -1;
+    let detectedColumn = "不明 (先頭列を使用)";
+    
     for (const keyword of PRODUCT_NAME_KEYWORDS) {
       const idx = headers.findIndex(h => h.toLowerCase().includes(keyword));
       if (idx !== -1) {
         nameIndex = idx;
+        detectedColumn = headers[idx];
         break;
       }
     }
 
     if (nameIndex === -1) {
       nameIndex = 0; 
+      if (headers.length > 0) detectedColumn = `${headers[0]} (自動割当)`;
     }
 
-    return dataRows.map(row => ({
+    // サンプルデータの取得
+    const sample = dataRows.length > 0 ? (dataRows[0][nameIndex] || "").substring(0, 20) + "..." : "-";
+
+    const items = dataRows.map(row => ({
       id: generateId(),
       productName: row[nameIndex] || "(不明)",
       originalRow: row,
       headers: headers,
       fileName: fileName,
+      detectedColumn: detectedColumn, // メタデータを各アイテムにも持たせる
       risk: 'Unchecked', 
       reason: ''
     }));
+
+    return { items, meta: { fileName, detectedColumn, sample } };
+  };
+
+  const downloadMergedCSV = () => {
+    if (inventory.length === 0) return alert("データがありません");
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    
+    // ヘッダーは最初のアイテムのものを使用
+    const baseHeaders = inventory[0]?.headers || [];
+    let csvContent = baseHeaders.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
+    
+    inventory.forEach(item => {
+      const rowString = item.originalRow.map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
+      csvContent += rowString + "\n";
+    });
+
+    const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `merged_data_${new Date().getTime()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const downloadResultCSV = () => {
@@ -556,6 +598,7 @@ export default function App() {
   const handleReset = () => {
     if (isProcessing && !confirm("処理を中断して初期化しますか？")) return;
     setInventory([]);
+    setFileMeta([]);
     setResults([]);
     setReportText('');
     setProgress(0);
@@ -685,28 +728,6 @@ export default function App() {
     setIsProcessing(false);
   };
 
-  const downloadMergedCSV = () => {
-    if (csvData.length === 0 && inventory.length === 0) return alert("データがありません");
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    
-    const baseHeaders = inventory[0]?.headers || [];
-    let csvContent = baseHeaders.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
-    
-    inventory.forEach(item => {
-      const rowString = item.originalRow.map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
-      csvContent += rowString + "\n";
-    });
-
-    const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", `merged_data_${new Date().getTime()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   const displayResults = inventory.filter(i => ['Critical', 'High', 'Medium'].includes(i.risk));
 
   if (!isAuthenticated) {
@@ -812,6 +833,34 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              {/* 👁️ 読み込みデータのプレビューエリア (新機能) */}
+              {fileMeta.length > 0 && (
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 animate-in fade-in">
+                  <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><Eye className="w-4 h-4 text-teal-600" /> データ読み込み確認（商品名列チェック）</h3>
+                  <div className="max-h-40 overflow-y-auto border border-slate-100 rounded-lg">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-slate-50 text-slate-500 font-medium sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2">ファイル名</th>
+                          <th className="px-3 py-2">検出された商品名列</th>
+                          <th className="px-3 py-2">最初の値 (サンプル)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {fileMeta.map((f, i) => (
+                          <tr key={i}>
+                            <td className="px-3 py-2 text-slate-700 truncate max-w-[150px]" title={f.fileName}>{f.fileName}</td>
+                            <td className="px-3 py-2 text-indigo-600 font-bold">{f.detectedColumn}</td>
+                            <td className="px-3 py-2 text-slate-500 truncate max-w-[200px]" title={f.sample}>{f.sample}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-2 text-right">※「検出された商品名列」が意図しない項目の場合、読込オプションの文字コードを確認するか、CSVヘッダーを修正してください。</p>
+                </div>
+              )}
 
               {/* プログレスバー & 操作ボタン */}
               <div className="pt-4 border-t border-slate-100">
