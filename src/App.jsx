@@ -520,7 +520,7 @@ export default function App() {
   };
 
   const downloadMergedCSV = () => {
-    if (csvData.length === 0 && inventory.length === 0) return alert("データがありません");
+    if (inventory.length === 0) return alert("データがありません");
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
     
     // ヘッダーは最初のアイテムのものを使用
