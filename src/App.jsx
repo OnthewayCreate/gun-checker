@@ -296,10 +296,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('checker');
   
   // データ管理用ステート
-  // inventory: 読み込んだ全データ
-  // { id, productName, originalRow, headers, fileName, risk, reason, status, detectedColumn }
   const [inventory, setInventory] = useState([]);
-  // ファイルごとのメタデータ（プレビュー用）
   const [fileMeta, setFileMeta] = useState([]);
   
   const [isProcessing, setIsProcessing] = useState(false);
