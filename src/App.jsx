@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy, Target, Eye, AlertTriangle } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy, Target, Eye, AlertTriangle, Search, Filter } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 
 // ==========================================
@@ -29,6 +29,39 @@ const FALLBACK_MODEL = 'gemini-1.5-flash';
 
 // 商品名を特定するためのキーワード（優先順）
 const PRODUCT_NAME_KEYWORDS = ['商品名', 'product', 'name', 'title', 'item', '名称', '品名'];
+
+// デフォルトのフィルタキーワード（海外EC・中華トイガン対策強化版）
+const DEFAULT_FILTER_KEYWORDS = [
+  // --- 1. 基本名称・隠語 ---
+  '銃', 'ガン', 'ピストル', 'ライフル', 'マシンガン', '拳銃', '鉄砲', 'リボルバー', 'オートマチック',
+  'スナイパー', 'ショットガン', 'サブマシンガン', 'ランチャー', 'ブラスター', 'Blaster',
+  
+  // --- 2. 海外製・中華トイガン特有の表現 (AliExpress/Alibaba系) ---
+  'ナーフ', 'Nerf', 'スポンジ弾', 'ソフト弾', 'ソフトブレット', 'Soft Bullet', 'EVA',
+  '水弾', 'ジェルブラスター', 'Gel Blaster', 'Gel Ball', 'ウォーターガン',
+  'ナイロン', 'Nylon', '合金', 'Alloy', 'メタル', 'Metal', '樹脂',
+  'CSゲーム', 'PUBG', 'Apex', '戦術', 'Tactical', '模型', 'シミュレーション', 'Simulation',
+  'アウトドア', 'スポーツ', '競技用', 'おもちゃ', '玩具', 'Prop',
+  
+  // --- 3. 構造・ギミック（重要：改造や違法性の判定に関連しやすい） ---
+  '排莢', '薬莢', 'カートリッジ', 'シェル', 'Shell', 'Ejection', 'カート式',
+  'ブローバック', 'Blowback', '撃針', 'ファイアリングピン', 'Firing Pin', '雷管',
+  'シリンダー', 'スライド', 'バレル', 'トリガー', 'ハンマー', 'マズル',
+  'リアル', 'Real', '重量', '重厚', 'フルメタル', 'Full Metal', 'CNC', '削り出し',
+  'ガス', 'CO2', 'Gas', '電動', 'AEG', 'GBB', 'エアコキ',
+  
+  // --- 4. 特定モデル・型番（海外製などでよく使われる） ---
+  'GLOCK', 'G17', 'G18', 'G19', 'G26', 'G34', 'グロック',
+  'COLT', 'M1911', 'ガバメント', 'Government', 'コルト',
+  'BERETTA', 'M92', 'M9', 'ベレッタ',
+  'SMITH', 'WESSON', 'M29', 'M629', 'PYTHON', 'パイソン',
+  'M4', 'M16', 'HK416', 'AR15', 'MK18',
+  'AK47', 'AK74', 'AKM', 'カラシニコフ',
+  'SIG', 'P320', 'P226', 'M17', 'M18',
+  'TTI', 'STI', '2011', 'ハイキャパ', 'Hi-Capa', 'COMBAT MASTER',
+  'KAR98', 'AWM', 'M24', 'BARRETT', 'バレット',
+  'デザートイーグル', 'Desert Eagle', 'DE'
+];
 
 // ==========================================
 // 1. ユーティリティ (堅牢化版)
@@ -338,10 +371,15 @@ export default function App() {
   
   const [activeTab, setActiveTab] = useState('checker');
   
-  // データ管理用ステート（分離して最適化）
+  // データ管理用ステート
   const [inventory, setInventory] = useState([]); // メタデータと元データのみ
   const [results, setResults] = useState({}); // { [id]: { risk, reason } }
   const [fileMeta, setFileMeta] = useState([]);
+
+  // フィルタリング用ステート
+  const [filterKeywords, setFilterKeywords] = useState(DEFAULT_FILTER_KEYWORDS);
+  const [newKeyword, setNewKeyword] = useState('');
+  const [isFilterEnabled, setIsFilterEnabled] = useState(false);
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -560,40 +598,59 @@ export default function App() {
       headers: headers,
       fileName: fileName,
       detectedColumn: detectedColumn
-      // risk, reason は results State で管理するため削除
     }));
 
     return { items, meta: { fileName, detectedColumn, sample } };
   };
 
-  // 判定済みの結果と元データを結合して取得するヘルパー
-  const getMergedItems = () => {
-    return inventory.map(item => ({
-      ...item,
-      risk: results[item.id]?.risk || 'Unchecked',
-      reason: results[item.id]?.reason || ''
-    }));
+  // フィルタリングロジック（メモ化）
+  const filteredInventory = useMemo(() => {
+    if (!isFilterEnabled) return inventory;
+    
+    return inventory.filter(item => {
+      if (!item.productName) return false;
+      // ひとつでもキーワードが含まれていればヒット
+      return filterKeywords.some(keyword => 
+        item.productName.toLowerCase().includes(keyword.toLowerCase())
+      );
+    });
+  }, [inventory, isFilterEnabled, filterKeywords]);
+
+  const addKeyword = () => {
+    if (newKeyword && !filterKeywords.includes(newKeyword)) {
+      setFilterKeywords([...filterKeywords, newKeyword]);
+      setNewKeyword('');
+    }
   };
 
-  // 表示用にフィルタリングされたデータ（High/Medium/Criticalのみ）
+  const removeKeyword = (keyword) => {
+    setFilterKeywords(filterKeywords.filter(k => k !== keyword));
+  };
+
+  // 表示用にフィルタリングされたデータ（High/Medium/Criticalのみ、かつフィルタ有効時はフィルタ対象内から）
   const displayResults = useMemo(() => {
-    return inventory
+    // 表示は常に「リスクがあるもの」を表示したいが、
+    // フィルタモード中は「フィルタにヒットして、かつリスクがあるもの」になる
+    const targetBase = isFilterEnabled ? filteredInventory : inventory;
+
+    return targetBase
       .map(item => ({
         ...item,
         risk: results[item.id]?.risk || 'Unchecked',
         reason: results[item.id]?.reason || ''
       }))
       .filter(item => ['Critical', 'High', 'Medium'].includes(item.risk));
-  }, [inventory, results]);
+  }, [inventory, filteredInventory, results, isFilterEnabled]);
 
   const downloadMergedCSV = () => {
-    if (inventory.length === 0) return alert("データがありません");
+    const targetData = isFilterEnabled ? filteredInventory : inventory;
+    if (targetData.length === 0) return alert("データがありません");
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
     
-    const baseHeaders = inventory[0]?.headers || [];
+    const baseHeaders = targetData[0]?.headers || [];
     let csvContent = baseHeaders.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
     
-    inventory.forEach(item => {
+    targetData.forEach(item => {
       const rowString = item.originalRow.map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
       csvContent += rowString + "\n";
     });
@@ -687,9 +744,13 @@ export default function App() {
 
     if (initialKeys.length === 0) return alert("有効なAPIキーが設定されていません。");
     
+    // フィルタリングが有効なら、フィルタリングされたリストを対象にする
+    const targetInventory = isFilterEnabled ? filteredInventory : inventory;
+
     // まだ判定結果がない（resultsにIDキーがない）ものを対象にする
-    const uncheckedItems = inventory.filter(i => !results[i.id] || results[i.id].risk === 'Unchecked');
-    if (uncheckedItems.length === 0) return alert("未判定のデータがありません。");
+    const uncheckedItems = targetInventory.filter(i => !results[i.id] || results[i.id].risk === 'Unchecked');
+    
+    if (uncheckedItems.length === 0) return alert("チェック対象のデータがありません（すべて判定済みか、フィルタ条件に合致しません）。");
 
     setIsProcessing(true);
     stopRef.current = false;
@@ -741,7 +802,6 @@ export default function App() {
           if (chunkProducts.length > 0) {
             tasks.push(
               checkIPRiskBulkWithRotation(chunkProducts, activeKeys, setActiveKeys, currentModelId).then(resultMap => {
-                // 結果を整形
                 const updates = {};
                 chunkProducts.forEach(p => {
                     updates[p.id] = {
@@ -749,7 +809,6 @@ export default function App() {
                         reason: resultMap[p.id]?.reason || "判定失敗"
                     };
                 });
-                // ここでinventory全体ではなく、resultsのみを更新することで高速化
                 setResults(prev => ({ ...prev, ...updates }));
                 return Object.values(updates);
               })
@@ -805,8 +864,8 @@ export default function App() {
         <div className="bg-white p-16 rounded-2xl shadow-2xl w-full max-w-5xl transition-all border border-slate-200">
           <div className="flex flex-col items-center">
             <div className="bg-teal-600 p-6 rounded-full mb-8 shadow-lg shadow-teal-200"><ShieldCheck className="w-16 h-16 text-white" /></div>
-            <h1 className="text-4xl font-black text-center text-slate-800 mb-2 tracking-tight">トイガン・セーフティチェック <span className="text-teal-600">Ver.2.1</span></h1>
-            <span className="text-sm font-bold bg-slate-100 text-slate-500 px-4 py-1.5 rounded-full mb-10">軽量化・安定版</span>
+            <h1 className="text-4xl font-black text-center text-slate-800 mb-2 tracking-tight">トイガン・セーフティチェック <span className="text-teal-600">Ver.2.2</span></h1>
+            <span className="text-sm font-bold bg-slate-100 text-slate-500 px-4 py-1.5 rounded-full mb-10">簡易フィルター＆軽量版</span>
           </div>
           <form onSubmit={handleLogin} className="space-y-8 max-w-xl mx-auto"> 
             <div>
@@ -829,7 +888,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3 font-black text-slate-800 text-xl">
             <ShieldCheck className="w-8 h-8 text-teal-600" />
-            <span>トイガン・セーフティチェック <span className="text-xs font-medium text-white bg-teal-600 px-2 py-0.5 rounded ml-1">Ver.2.1</span></span>
+            <span>トイガン・セーフティチェック <span className="text-xs font-medium text-white bg-teal-600 px-2 py-0.5 rounded ml-1">Ver.2.2</span></span>
           </div>
           <div className="flex items-center gap-1">
             <button onClick={() => setActiveTab('checker')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'checker' ? 'bg-teal-50 text-teal-600' : 'text-slate-500 hover:bg-slate-50'}`}>スクリーニング</button>
@@ -917,7 +976,51 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 👁️ 読み込みデータのプレビューエリア (新機能) */}
+              {/* 🔍 簡易キーワードフィルター (新機能) */}
+              {inventory.length > 0 && (
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 animate-in fade-in mt-4">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
+                    <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                      <Filter className="w-5 h-5 text-indigo-600" />
+                      簡易キーワードフィルター (事前絞り込み)
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-slate-600">フィルター有効:</span>
+                      <div onClick={() => setIsFilterEnabled(!isFilterEnabled)} className={`w-12 h-6 rounded-full relative transition-colors cursor-pointer ${isFilterEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}>
+                        <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${isFilterEnabled ? 'left-7' : 'left-1'}`} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className={`transition-all duration-300 ${isFilterEnabled ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {filterKeywords.map(keyword => (
+                        <span key={keyword} className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                          {keyword}
+                          <button onClick={() => removeKeyword(keyword)} className="ml-1 text-indigo-400 hover:text-indigo-600"><X className="w-3 h-3" /></button>
+                        </span>
+                      ))}
+                      <div className="flex items-center gap-1 ml-2">
+                        <input 
+                          type="text" 
+                          value={newKeyword} 
+                          onChange={(e) => setNewKeyword(e.target.value)} 
+                          onKeyPress={(e) => e.key === 'Enter' && addKeyword()}
+                          placeholder="キーワード追加" 
+                          className="text-xs px-2 py-1 border rounded w-24 focus:outline-none focus:border-indigo-500"
+                        />
+                        <button onClick={addKeyword} className="p-1 bg-indigo-600 text-white rounded hover:bg-indigo-700"><Check className="w-3 h-3" /></button>
+                      </div>
+                    </div>
+                    <div className="bg-indigo-50 p-3 rounded-lg text-xs text-indigo-800 flex justify-between items-center">
+                      <span>現在の絞り込み結果: <strong>{filteredInventory.length}</strong> / {inventory.length} 件</span>
+                      <span className="text-indigo-500">※「チェック開始」を押すと、この絞り込まれた商品のみAIチェックを行います。</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 👁️ 読み込みデータのプレビューエリア */}
               {fileMeta.length > 0 && (
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 animate-in fade-in">
                   <h3 className="font-bold text-slate-700 mb-3 flex items-center gap-2"><Eye className="w-4 h-4 text-teal-600" /> データ読み込み確認（商品名列チェック）</h3>
@@ -941,7 +1044,6 @@ export default function App() {
                       </tbody>
                     </table>
                   </div>
-                  <p className="text-[10px] text-slate-400 mt-2 text-right">※「検出された商品名列」が意図しない項目の場合、読込オプションの文字コードを確認するか、CSVヘッダーを修正してください。</p>
                 </div>
               )}
 
