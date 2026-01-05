@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy, Target, Eye } from 'lucide-react';
+import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy, Target, Eye, AlertTriangle } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 // import JSZip from 'jszip'; // CDNで読み込むため削除
 
@@ -17,43 +17,76 @@ const RISK_MAP = {
 };
 
 const MODELS = [
-  { id: 'gemini-2.0-flash-lite-preview-02-05', name: 'Gemini 2.0 Flash-Lite (最新・高速)' },
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (安定・推奨)' },
+  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (推奨・高速)' },
   { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B (軽量)' },
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (高精度)' },
   { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (実験的)' },
 ];
 
-const DEFAULT_MODEL = 'gemini-2.0-flash-lite-preview-02-05';
+const DEFAULT_MODEL = 'gemini-1.5-flash';
 const FALLBACK_MODEL = 'gemini-1.5-flash';
 
 // 商品名を特定するためのキーワード（優先順）
 const PRODUCT_NAME_KEYWORDS = ['商品名', 'product', 'name', 'title', 'item', '名称', '品名'];
 
 // ==========================================
-// 1. ユーティリティ
+// 1. ユーティリティ (堅牢化版)
 // ==========================================
 const parseCSV = (text) => {
+  // BOM削除
+  if (text.charCodeAt(0) === 0xFEFF) {
+    text = text.slice(1);
+  }
+
   const rows = [];
   let currentRow = [];
   let currentField = '';
   let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') { currentField += '"'; i++; }
-      else { inQuotes = !inQuotes; }
-    } else if (char === ',' && !inQuotes) {
-      currentRow.push(currentField); currentField = '';
-    } else if ((char === '\r' || char === '\n') && !inQuotes) {
-      if (char === '\r' && nextChar === '\n') i++;
-      currentRow.push(currentField); currentField = '';
-      if (currentRow.length > 0) rows.push(currentRow);
-      currentRow = [];
-    } else { currentField += char; }
+  
+  // メモリ保護のため、最大行数制限などを設けることも検討できますが、
+  // ここではループ処理の最適化を行います。
+  const len = text.length;
+  
+  try {
+    for (let i = 0; i < len; i++) {
+      const char = text[i];
+      const nextChar = text[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') { 
+          currentField += '"'; 
+          i++; 
+        } else { 
+          inQuotes = !inQuotes; 
+        }
+      } else if (char === ',' && !inQuotes) {
+        currentRow.push(currentField); 
+        currentField = '';
+      } else if ((char === '\r' || char === '\n') && !inQuotes) {
+        if (char === '\r' && nextChar === '\n') i++;
+        currentRow.push(currentField); 
+        currentField = '';
+        // 空行スキップ (必要に応じて)
+        if (currentRow.some(f => f.trim() !== '')) {
+           rows.push(currentRow);
+        }
+        currentRow = [];
+      } else { 
+        currentField += char; 
+      }
+    }
+    // 最後の行の処理
+    if (currentField || currentRow.length > 0) { 
+      currentRow.push(currentField); 
+      if (currentRow.some(f => f.trim() !== '')) {
+        rows.push(currentRow); 
+      }
+    }
+  } catch (e) {
+    console.error("CSV Parse Error", e);
+    return []; // エラー時は空配列を返してクラッシュを防ぐ
   }
-  if (currentField || currentRow.length > 0) { currentRow.push(currentField); rows.push(currentRow); }
+  
   return rows;
 };
 
@@ -139,7 +172,11 @@ async function generateSafetyReport(riskyItems, apiKey, modelId) {
     body: JSON.stringify(payload)
   });
 
-  if (!response.ok) throw new Error(`Report Gen Error: ${response.status}`);
+  if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Report Gen Error Details:", errorText);
+      throw new Error(`Report Gen Error: ${response.status}`);
+  }
   const data = await response.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text || "レポート生成に失敗しました。";
 }
@@ -236,6 +273,7 @@ JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", 
             parsedResults = [parsedResults];
         }
     } catch (e) {
+        console.error("JSON Parse Error:", cleanText);
         throw new Error(`解析不能: ${e.message}`);
     }
 
@@ -302,6 +340,7 @@ export default function App() {
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [errorMsg, setErrorMsg] = useState(''); // エラー表示用
   
   const [reportText, setReportText] = useState('');
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
@@ -611,6 +650,7 @@ export default function App() {
     setResults([]);
     setReportText('');
     setProgress(0);
+    setErrorMsg('');
     setStatusState({ 
       message: '待機中', 
       successCount: 0, 
@@ -623,9 +663,11 @@ export default function App() {
     stopRef.current = true;
   };
 
+  // エラーバウンダリー的な処理を含むメインループ
   const startProcessing = async () => {
     const initialKeys = parseKeys(apiKeysText);
     setActiveKeys(initialKeys);
+    setErrorMsg('');
 
     if (initialKeys.length === 0) return alert("有効なAPIキーが設定されていません。");
     
@@ -663,73 +705,80 @@ export default function App() {
       }));
     };
 
-    while (currentIndex < total) {
-      if (stopRef.current) break;
-      
-      const tasks = [];
-      const currentBatchNum = Math.floor(currentIndex / BULK_SIZE) + 1;
-      
-      setStatusState(prev => ({
-        ...prev,
-        message: `広域チェック進行中... (${currentIndex}/${total}件)`,
-        currentBatch: currentBatchNum,
-      }));
-
-      for (let c = 0; c < CONCURRENCY; c++) {
-        const chunkStart = currentIndex + (c * BULK_SIZE);
-        if (chunkStart >= total) break;
-        const chunkEnd = Math.min(chunkStart + BULK_SIZE, total);
+    try {
+      while (currentIndex < total) {
+        if (stopRef.current) break;
         
-        const chunkProducts = [];
-        for (let i = chunkStart; i < chunkEnd; i++) {
-          chunkProducts.push(uncheckedItems[i]);
-        }
+        const tasks = [];
+        const currentBatchNum = Math.floor(currentIndex / BULK_SIZE) + 1;
         
-        if (chunkProducts.length > 0) {
-          tasks.push(
-            checkIPRiskBulkWithRotation(chunkProducts, activeKeys, setActiveKeys, currentModelId).then(resultMap => {
-              const updates = chunkProducts.map(p => ({
-                id: p.id,
-                risk: resultMap[p.id]?.risk || "Error",
-                reason: resultMap[p.id]?.reason || "判定失敗",
-              }));
-              updateInventory(updates);
-              return updates;
-            })
-          );
+        setStatusState(prev => ({
+          ...prev,
+          message: `広域チェック進行中... (${currentIndex}/${total}件)`,
+          currentBatch: currentBatchNum,
+        }));
+
+        for (let c = 0; c < CONCURRENCY; c++) {
+          const chunkStart = currentIndex + (c * BULK_SIZE);
+          if (chunkStart >= total) break;
+          const chunkEnd = Math.min(chunkStart + BULK_SIZE, total);
+          
+          const chunkProducts = [];
+          for (let i = chunkStart; i < chunkEnd; i++) {
+            chunkProducts.push(uncheckedItems[i]);
+          }
+          
+          if (chunkProducts.length > 0) {
+            tasks.push(
+              checkIPRiskBulkWithRotation(chunkProducts, activeKeys, setActiveKeys, currentModelId).then(resultMap => {
+                const updates = chunkProducts.map(p => ({
+                  id: p.id,
+                  risk: resultMap[p.id]?.risk || "Error",
+                  reason: resultMap[p.id]?.reason || "判定失敗",
+                }));
+                updateInventory(updates);
+                return updates;
+              })
+            );
+          }
         }
-      }
 
-      if (tasks.length > 0) {
-        try {
-          const chunkResults = await Promise.all(tasks);
-          const flatUpdates = chunkResults.flat();
-          
-          const dangerousCount = flatUpdates.filter(u => ['Critical', 'High', 'Medium'].includes(u.risk)).length;
-          const errorCount = flatUpdates.filter(u => u.risk === 'Error').length;
-          
-          setStatusState(prev => ({
-            ...prev,
-            successCount: prev.successCount + dangerousCount,
-            errorCount: prev.errorCount + errorCount
-          }));
+        if (tasks.length > 0) {
+          try {
+            const chunkResults = await Promise.all(tasks);
+            const flatUpdates = chunkResults.flat();
+            
+            const dangerousCount = flatUpdates.filter(u => ['Critical', 'High', 'Medium'].includes(u.risk)).length;
+            const errorCount = flatUpdates.filter(u => u.risk === 'Error').length;
+            
+            setStatusState(prev => ({
+              ...prev,
+              successCount: prev.successCount + dangerousCount,
+              errorCount: prev.errorCount + errorCount
+            }));
 
-          currentIndex += tasks.reduce((acc, _, idx) => {
-             const processedInTask = Math.min(currentIndex + ((idx + 1) * BULK_SIZE), total) - (currentIndex + (idx * BULK_SIZE));
-             return acc + (processedInTask > 0 ? processedInTask : 0);
-          }, 0);
-          
-          const nextProgress = Math.round((currentIndex / total) * 100);
-          setProgress(nextProgress);
+            currentIndex += tasks.reduce((acc, _, idx) => {
+               const processedInTask = Math.min(currentIndex + ((idx + 1) * BULK_SIZE), total) - (currentIndex + (idx * BULK_SIZE));
+               return acc + (processedInTask > 0 ? processedInTask : 0);
+            }, 0);
+            
+            const nextProgress = Math.round((currentIndex / total) * 100);
+            setProgress(nextProgress);
 
-        } catch (e) {
-          console.error("Batch error:", e);
-          currentIndex += (CONCURRENCY * BULK_SIZE);
+          } catch (e) {
+            console.error("Batch error:", e);
+            // 個別のバッチエラーで全体を止めない
+            currentIndex += (CONCURRENCY * BULK_SIZE);
+          }
         }
-      }
 
-      const baseWait = isHighSpeed ? 300 : 1500;
-      if (currentIndex < total) await new Promise(resolve => setTimeout(resolve, baseWait));
+        const baseWait = isHighSpeed ? 300 : 1500;
+        if (currentIndex < total) await new Promise(resolve => setTimeout(resolve, baseWait));
+      }
+    } catch (criticalError) {
+      console.error("Critical Processing Error:", criticalError);
+      setErrorMsg("処理中に予期せぬエラーが発生しました。");
+      stopRef.current = true;
     }
     
     setProgress(100);
@@ -804,6 +853,17 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              {/* エラーメッセージ表示 */}
+              {errorMsg && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded relative mb-4 flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5" />
+                  <span className="block sm:inline">{errorMsg}</span>
+                  <span className="absolute top-0 bottom-0 right-0 px-4 py-3" onClick={() => setErrorMsg('')}>
+                    <X className="w-4 h-4 cursor-pointer" />
+                  </span>
+                </div>
+              )}
 
               {/* ファイルアップロード＆設定エリア */}
               <div className="flex flex-col lg:flex-row gap-6">
