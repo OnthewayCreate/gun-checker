@@ -30,37 +30,27 @@ const FALLBACK_MODEL = 'gemini-1.5-flash';
 // 商品名を特定するためのキーワード（優先順）
 const PRODUCT_NAME_KEYWORDS = ['商品名', 'product', 'name', 'title', 'item', '名称', '品名'];
 
-// デフォルトのフィルタキーワード（海外EC・中華トイガン対策強化版）
+// 厳選されたフィルタキーワード（ノイズを極力排除）
 const DEFAULT_FILTER_KEYWORDS = [
-  // --- 1. 基本名称・隠語 ---
+  // --- 1. 明確に「銃」を示す単語のみ ---
   '銃', 'ガン', 'ピストル', 'ライフル', 'マシンガン', '拳銃', '鉄砲', 'リボルバー', 'オートマチック',
   'スナイパー', 'ショットガン', 'サブマシンガン', 'ランチャー', 'ブラスター', 'Blaster',
+  'エアガン', 'モデルガン', 'ガスガン', '電動ガン', 'Airsoft', 'Model Gun', 'Gas Gun', 'Toy Gun',
   
-  // --- 2. 海外製・中華トイガン特有の表現 (AliExpress/Alibaba系) ---
-  'ナーフ', 'Nerf', 'スポンジ弾', 'ソフト弾', 'ソフトブレット', 'Soft Bullet', 'EVA',
-  '水弾', 'ジェルブラスター', 'Gel Blaster', 'Gel Ball', 'ウォーターガン',
-  'ナイロン', 'Nylon', '合金', 'Alloy', 'メタル', 'Metal', '樹脂',
-  'CSゲーム', 'PUBG', 'Apex', '戦術', 'Tactical', '模型', 'シミュレーション', 'Simulation',
-  'アウトドア', 'スポーツ', '競技用', 'おもちゃ', '玩具', 'Prop',
+  // --- 2. 危険な構造・ギミック（GPSや雑貨にはまず使われない単語） ---
+  '排莢', '薬莢', 'カートリッジ', 'ブローバック', 'Blowback', 
+  '撃針', 'ファイアリングピン', 'Firing Pin', '雷管',
+  '実弾', '火薬', '空砲', 'ライブカート',
+  'スポンジ弾', 'ソフト弾', '水弾', 'ジェルブラスター', 'Gel Blaster',
   
-  // --- 3. 構造・ギミック（重要：改造や違法性の判定に関連しやすい） ---
-  '排莢', '薬莢', 'カートリッジ', 'シェル', 'Shell', 'Ejection', 'カート式',
-  'ブローバック', 'Blowback', '撃針', 'ファイアリングピン', 'Firing Pin', '雷管',
-  'シリンダー', 'スライド', 'バレル', 'トリガー', 'ハンマー', 'マズル',
-  'リアル', 'Real', '重量', '重厚', 'フルメタル', 'Full Metal', 'CNC', '削り出し',
-  'ガス', 'CO2', 'Gas', '電動', 'AEG', 'GBB', 'エアコキ',
-  
-  // --- 4. 特定モデル・型番（海外製などでよく使われる） ---
-  'GLOCK', 'G17', 'G18', 'G19', 'G26', 'G34', 'グロック',
-  'COLT', 'M1911', 'ガバメント', 'Government', 'コルト',
-  'BERETTA', 'M92', 'M9', 'ベレッタ',
-  'SMITH', 'WESSON', 'M29', 'M629', 'PYTHON', 'パイソン',
-  'M4', 'M16', 'HK416', 'AR15', 'MK18',
-  'AK47', 'AK74', 'AKM', 'カラシニコフ',
-  'SIG', 'P320', 'P226', 'M17', 'M18',
-  'TTI', 'STI', '2011', 'ハイキャパ', 'Hi-Capa', 'COMBAT MASTER',
-  'KAR98', 'AWM', 'M24', 'BARRETT', 'バレット',
-  'デザートイーグル', 'Desert Eagle', 'DE'
+  // --- 3. 特定の銃器モデル名（誤検知しにくいものに限定） ---
+  'GLOCK', 'G17', 'G18', 'G19', 'グロック',
+  'COLT', 'M1911', 'ガバメント', 'コルト',
+  'BERETTA', 'M92', 'ベレッタ',
+  'SMITH', 'WESSON', 'PYTHON', 'パイソン',
+  'M4A1', 'M16', 'HK416', 'AK47', 'AK74', 'AKM', 'カラシニコフ',
+  'SIG SAUER', 'P320', 'P226',
+  'デザートイーグル', 'Desert Eagle'
 ];
 
 // ==========================================
@@ -181,11 +171,12 @@ async function generateSafetyReport(riskyItems, apiKey, modelId) {
 
 【報告書のポイント】
 今回の調査では、従来の金属製真正拳銃だけでなく、**「プラスチック製だが実弾発射機能を持つ違法銃」**の可能性も含めてスクリーニングを行いました。
+ただし、GPSや乗り物などの誤検知品が含まれている場合は、それらを報告書から除外または「誤検知」として注記してください。
 
 【レポート構成】
 1. **概要**: 検出総数とリスク別内訳。
 2. **Critical/High分析**: 「REAL GIMMICK」や「撃針機能」を持つ商品、特にプラスチック製でも構造が危険なものの有無。
-3. **Mediumの傾向**: 一般的なおもちゃの銃の検出状況。
+3. **Mediumの傾向**: 一般的なトイガン（おもちゃの銃）の検出状況。
 4. **推奨アクション**: 疑わしい商品は材質に関わらず現物確認を行うよう指示。
 
 文体は「報告書」として適切で、簡潔かつ断定的なトーンで作成してください。
@@ -221,35 +212,34 @@ async function checkIPRiskBulkWithRotation(products, availableKeys, setAvailable
   
   const systemInstruction = `
 あなたは真正拳銃回収スクリーニングシステムです。
-入力データから、**「銃」に関連するあらゆるおもちゃ（ガング）**を抽出し、危険度を判定してください。
+入力データから、**「実弾発射機能を持つ可能性のある銃」および「銃の形状をしたトイガン」**のみを抽出し、危険度を判定してください。
 
-【重要：違法性の判断基準の更新】
-**「金属製」だけが違法の基準ではありません。**
-警察庁の最新情報によると、**「プラスチック製」であっても、撃針（ファイアリングピン）を有し、薬莢の雷管を打撃して発射する機構を持つものは「真正拳銃」として摘発対象**となります。
-したがって、材質に関わらず、構造やギミックに注目して判定してください。
+【重要：除外対象（これらは絶対に抽出しない/Lowとすること）】
+以下の商品は**銃ではないため、絶対に抽出しないでください（Low判定）**。
+- **GPS機器、スマートウォッチ、通信機器、紛失防止タグ**
+- **三輪車、キッズバイク、乗り物、キックボード**
+- **洗車用フォームガン、散水ノズル、スプレーボトル**
+- **バッグ、衣類、ホルスター、ゴーグル、標的（ターゲット）単体**
+- **コントローラー、ゲーム機周辺機器**
 
 【判定基準】
 1. **🚨 Critical (即回収対象)**: 
-   - キーワード: "REAL GIMMICK", "MINI REVOLVER", "YUMEYA", "SOPEN"
-   - 特徴: **「撃針」「雷管打撃」「薬莢にスプリング内蔵」**等の記述があるもの。
-   - 銃身や弾倉が貫通している構造のもの（プラスチック製含む）。
+   - 「実弾未遂」「改造可能」「撃針（ファイアリングピン）」「雷管」などの記述があり、実銃に近い構造を持つもの。
+   - 違法性の高い海外製金属モデル。
 
 2. **🔴 High (要確認)**: 
-   - 海外製で詳細な構造が不明なトイガン全般。
-   - 「排莢」「リアルカート」「中折れ式」などのギミックを売りにしているが、安全基準（ASGK等）の明記がないもの。
-   - 材質が不明確だが、実銃に近い構造を示唆しているもの。
+   - 詳細不明な海外製トイガン（AliExpress/中華系）。
+   - 「排莢」「ブローバック」「リアルカート」などのギミックを謳うが、安全基準（STマーク/ASGK）の記載がないもの。
 
-3. **🟡 Medium (広義の回収対象 - おもちゃの銃全般)**:
-   - **ここを広く拾ってください。**
-   - キーワード: 「銃」「ガン」「トイガン」「ピストル」「ライフル」「マシンガン」「鉄砲」「エアガン」「モデルガン」「水鉄砲」「吸盤銃」「射的」など。
-   - 子供向けのおもちゃ、国内メーカー品（東京マルイ等）も全てここに含めます。
+3. **🟡 Medium (広義のトイガン)**:
+   - ナーフ、水鉄砲、吸盤銃、スポンジ弾発射玩具など、明らかに子供向けだが「銃の形」をしていて発射機能があるもの。
+   - 国内メーカー（東京マルイ等）の安全なエアソフトガン。
 
 4. **🟢 Low (対象外)**:
-   - 銃本体ではないもの（ホルスター、BB弾、ターゲット、衣類、ゴーグル等）。
-   - 全く関係ない雑貨、家電、食品。
+   - 上記以外すべて。**特にGPS、家電、雑貨、乗り物、洗車用品はここ。**
 
 【出力形式】
-JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", "reason": "理由（例: プラスチック製だが撃針機能の疑いあり）"}, ...]
+JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", "reason": "理由（例: GPS機器のため対象外）"}, ...]
 `;
 
   const currentModelId = isFallback ? FALLBACK_MODEL : (modelId || DEFAULT_MODEL);
@@ -864,8 +854,8 @@ export default function App() {
         <div className="bg-white p-16 rounded-2xl shadow-2xl w-full max-w-5xl transition-all border border-slate-200">
           <div className="flex flex-col items-center">
             <div className="bg-teal-600 p-6 rounded-full mb-8 shadow-lg shadow-teal-200"><ShieldCheck className="w-16 h-16 text-white" /></div>
-            <h1 className="text-4xl font-black text-center text-slate-800 mb-2 tracking-tight">トイガン・セーフティチェック <span className="text-teal-600">Ver.2.2</span></h1>
-            <span className="text-sm font-bold bg-slate-100 text-slate-500 px-4 py-1.5 rounded-full mb-10">簡易フィルター＆軽量版</span>
+            <h1 className="text-4xl font-black text-center text-slate-800 mb-2 tracking-tight">トイガン・セーフティチェック <span className="text-teal-600">Ver.2.3</span></h1>
+            <span className="text-sm font-bold bg-slate-100 text-slate-500 px-4 py-1.5 rounded-full mb-10">誤検知対策・厳選フィルター</span>
           </div>
           <form onSubmit={handleLogin} className="space-y-8 max-w-xl mx-auto"> 
             <div>
@@ -888,7 +878,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3 font-black text-slate-800 text-xl">
             <ShieldCheck className="w-8 h-8 text-teal-600" />
-            <span>トイガン・セーフティチェック <span className="text-xs font-medium text-white bg-teal-600 px-2 py-0.5 rounded ml-1">Ver.2.2</span></span>
+            <span>トイガン・セーフティチェック <span className="text-xs font-medium text-white bg-teal-600 px-2 py-0.5 rounded ml-1">Ver.2.3</span></span>
           </div>
           <div className="flex items-center gap-1">
             <button onClick={() => setActiveTab('checker')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'checker' ? 'bg-teal-50 text-teal-600' : 'text-slate-500 hover:bg-slate-50'}`}>スクリーニング</button>
