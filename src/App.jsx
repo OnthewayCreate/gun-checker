@@ -1,7 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Upload, FileText, CheckCircle, Play, Download, Loader2, Pause, Trash2, Settings, Save, Siren, Activity, Key, Ban, RotateCcw, Stethoscope, Check, X, Edit3, Flame, LogOut, FolderOpen, FileDown, ShieldCheck, Merge, Archive, Sparkles, ClipboardCopy, Target, Eye, AlertTriangle } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-// import JSZip from 'jszip'; // CDNで読み込むため削除
 
 // ==========================================
 // 定数・設定
@@ -9,11 +8,12 @@ import { initializeApp } from 'firebase/app';
 const FIXED_PASSWORD = 'admin123';
 
 const RISK_MAP = {
-  'Critical': { label: '回収対象(確定)', color: 'bg-rose-100 text-rose-800 border-rose-200 ring-1 ring-rose-300' }, 
-  'High': { label: '要確認(疑いあり)', color: 'bg-orange-100 text-orange-800 border-orange-200' },      
-  'Medium': { label: '玩具銃(広義対象)', color: 'bg-yellow-100 text-yellow-800 border-yellow-200' }, 
+  'Critical': { label: '回収対象(確定)', color: 'bg-rose-100 text-rose-800 border-rose-200 ring-1 ring-rose-300' },
+  'High': { label: '要確認(疑いあり)', color: 'bg-orange-100 text-orange-800 border-orange-200' },
+  'Medium': { label: '玩具銃(広義対象)', color: 'bg-yellow-100 text-yellow-800 border-yellow-200' },
   'Low': { label: '対象外', color: 'bg-slate-50 text-slate-300' },
-  'Error': { label: '解析エラー', color: 'bg-gray-200 text-gray-800 border-gray-300' }
+  'Error': { label: '解析エラー', color: 'bg-gray-200 text-gray-800 border-gray-300' },
+  'Unchecked': { label: '未判定', color: 'bg-slate-100 text-slate-400' }
 };
 
 const MODELS = [
@@ -44,8 +44,6 @@ const parseCSV = (text) => {
   let currentField = '';
   let inQuotes = false;
   
-  // メモリ保護のため、最大行数制限などを設けることも検討できますが、
-  // ここではループ処理の最適化を行います。
   const len = text.length;
   
   try {
@@ -54,38 +52,38 @@ const parseCSV = (text) => {
       const nextChar = text[i + 1];
 
       if (char === '"') {
-        if (inQuotes && nextChar === '"') { 
-          currentField += '"'; 
-          i++; 
-        } else { 
-          inQuotes = !inQuotes; 
+        if (inQuotes && nextChar === '"') {
+          currentField += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
         }
       } else if (char === ',' && !inQuotes) {
-        currentRow.push(currentField); 
+        currentRow.push(currentField);
         currentField = '';
       } else if ((char === '\r' || char === '\n') && !inQuotes) {
         if (char === '\r' && nextChar === '\n') i++;
-        currentRow.push(currentField); 
+        currentRow.push(currentField);
         currentField = '';
         // 空行スキップ
         if (currentRow.some(f => f.trim() !== '')) {
            rows.push(currentRow);
         }
         currentRow = [];
-      } else { 
-        currentField += char; 
+      } else {
+        currentField += char;
       }
     }
     // 最後の行の処理
-    if (currentField || currentRow.length > 0) { 
-      currentRow.push(currentField); 
+    if (currentField || currentRow.length > 0) {
+      currentRow.push(currentField);
       if (currentRow.some(f => f.trim() !== '')) {
-        rows.push(currentRow); 
+        rows.push(currentRow);
       }
     }
   } catch (e) {
     console.error("CSV Parse Error", e);
-    return []; // エラー時は空配列を返してクラッシュを防ぐ
+    return [];
   }
   
   return rows;
@@ -115,11 +113,10 @@ const parseKeys = (text) => {
   if (!text) return [];
   return text.split(/[\n, ]+/)
     .map(k => k.trim())
-    .filter(k => k.length > 10 && k.startsWith('AIza')); 
+    .filter(k => k.length > 10 && k.startsWith('AIza'));
 };
 
-// ユニークID生成
-const generateId = () => Math.random().toString(36).substr(2, 9);
+const generateId = () => Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
 
 // JSZipをCDNからロードするフック
 const useJSZip = () => {
@@ -175,7 +172,6 @@ async function generateSafetyReport(riskyItems, apiKey, modelId) {
 
   if (!response.ok) {
       const errorText = await response.text();
-      console.error("Report Gen Error Details:", errorText);
       throw new Error(`Report Gen Error: ${response.status}`);
   }
   const data = await response.json();
@@ -246,7 +242,7 @@ JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", 
       if (!isFallback && currentModelId !== FALLBACK_MODEL) {
         return checkIPRiskBulkWithRotation(products, availableKeys, setAvailableKeys, FALLBACK_MODEL, true);
       }
-      throw new Error("404 Not Found: モデル名またはAPIエンドポイントが無効です");
+      throw new Error("404 Not Found");
     }
 
     if (response.status === 400 || response.status === 403) {
@@ -283,21 +279,14 @@ JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", 
 
     const resultMap = {};
     parsedResults.forEach(item => {
-      // IDは文字列として比較
       const matchingProduct = products.find(p => String(p.id) === String(item.id));
       if (!matchingProduct) return;
 
       let risk = item.risk_level ? String(item.risk_level).trim() : 'Low';
-      
       if (risk.includes('Critical')) risk = 'Critical';
       else if (risk.includes('High')) risk = 'High';
       else if (risk.includes('Medium')) risk = 'Medium';
       else if (risk.includes('Low')) risk = 'Low';
-      
-      if (['危険', 'Critical'].includes(risk)) risk = 'Critical';
-      else if (['高', 'High'].includes(risk)) risk = 'High';
-      else if (['中', 'Medium'].includes(risk)) risk = 'Medium';
-      else risk = 'Low';
       
       resultMap[matchingProduct.id] = { risk, reason: item.reason };
     });
@@ -321,7 +310,19 @@ JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", 
 }
 
 // ==========================================
-// 3. メインコンポーネント
+// 3. UIコンポーネント
+// ==========================================
+const RiskBadge = ({ risk }) => {
+  const config = RISK_MAP[risk] || RISK_MAP['Low'];
+  return (
+    <span className={`inline-flex items-center justify-center px-2 py-1 rounded text-xs font-bold border ${config.color} whitespace-nowrap`}>
+      {config.label}
+    </span>
+  );
+};
+
+// ==========================================
+// 4. メインコンポーネント
 // ==========================================
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -337,13 +338,14 @@ export default function App() {
   
   const [activeTab, setActiveTab] = useState('checker');
   
-  // データ管理用ステート
-  const [inventory, setInventory] = useState([]);
+  // データ管理用ステート（分離して最適化）
+  const [inventory, setInventory] = useState([]); // メタデータと元データのみ
+  const [results, setResults] = useState({}); // { [id]: { risk, reason } }
   const [fileMeta, setFileMeta] = useState([]);
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [errorMsg, setErrorMsg] = useState(''); // エラー表示用
+  const [errorMsg, setErrorMsg] = useState('');
   
   const [reportText, setReportText] = useState('');
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
@@ -361,7 +363,6 @@ export default function App() {
   const [isHighSpeed, setIsHighSpeed] = useState(true); 
   const stopRef = useRef(false);
 
-  // JSZipロード
   const isZipLoaded = useJSZip();
 
   useEffect(() => {
@@ -378,7 +379,6 @@ export default function App() {
     if (savedModel && MODELS.some(m => m.id === savedModel)) {
       setModelId(savedModel);
     } else {
-      // 保存されたモデルがない、または無効な場合はデフォルトを強制
       setModelId(DEFAULT_MODEL);
     }
 
@@ -422,7 +422,6 @@ export default function App() {
     let results = {};
     let validKeys = [];
     
-    // 設定画面で選択中のモデル、またはデフォルトを使用
     const targetModel = modelId === 'custom' ? customModelId : (modelId || DEFAULT_MODEL);
 
     for (const key of keys) {
@@ -430,7 +429,6 @@ export default function App() {
       setKeyStatuses({...results});
       
       try {
-        // 接続テスト用のURL生成
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${key}`;
         let res = await fetch(url, {
           method: 'POST',
@@ -442,7 +440,6 @@ export default function App() {
           results[key] = { status: 'ok', msg: `接続OK (${targetModel})` };
           validKeys.push(key);
         } else if (res.status === 404) {
-          // 404の場合はモデル名が間違っている可能性があるので、FALLBACK_MODELで再試行
           const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${FALLBACK_MODEL}:generateContent?key=${key}`;
           const resFallback = await fetch(fallbackUrl, {
             method: 'POST',
@@ -554,7 +551,6 @@ export default function App() {
       if (headers.length > 0) detectedColumn = `${headers[0]} (自動割当)`;
     }
 
-    // サンプルデータの取得
     const sample = dataRows.length > 0 ? (dataRows[0][nameIndex] || "").substring(0, 20) + "..." : "-";
 
     const items = dataRows.map(row => ({
@@ -563,19 +559,37 @@ export default function App() {
       originalRow: row,
       headers: headers,
       fileName: fileName,
-      detectedColumn: detectedColumn, // メタデータを各アイテムにも持たせる
-      risk: 'Unchecked', 
-      reason: ''
+      detectedColumn: detectedColumn
+      // risk, reason は results State で管理するため削除
     }));
 
     return { items, meta: { fileName, detectedColumn, sample } };
   };
 
+  // 判定済みの結果と元データを結合して取得するヘルパー
+  const getMergedItems = () => {
+    return inventory.map(item => ({
+      ...item,
+      risk: results[item.id]?.risk || 'Unchecked',
+      reason: results[item.id]?.reason || ''
+    }));
+  };
+
+  // 表示用にフィルタリングされたデータ（High/Medium/Criticalのみ）
+  const displayResults = useMemo(() => {
+    return inventory
+      .map(item => ({
+        ...item,
+        risk: results[item.id]?.risk || 'Unchecked',
+        reason: results[item.id]?.reason || ''
+      }))
+      .filter(item => ['Critical', 'High', 'Medium'].includes(item.risk));
+  }, [inventory, results]);
+
   const downloadMergedCSV = () => {
     if (inventory.length === 0) return alert("データがありません");
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
     
-    // ヘッダーは最初のアイテムのものを使用
     const baseHeaders = inventory[0]?.headers || [];
     let csvContent = baseHeaders.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
     
@@ -595,7 +609,7 @@ export default function App() {
   };
 
   const downloadResultCSV = () => {
-    const targetItems = inventory.filter(i => ['Critical', 'High', 'Medium'].includes(i.risk));
+    const targetItems = displayResults;
     if (targetItems.length === 0) return alert("抽出されたデータがありません");
     
     const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
@@ -622,15 +636,15 @@ export default function App() {
   };
 
   const handleGenerateReport = async () => {
-    const displayResults = inventory.filter(i => ['Critical', 'High', 'Medium'].includes(i.risk));
-    if (displayResults.length === 0) return alert("レポート対象となるデータがありません。");
+    const targets = displayResults;
+    if (targets.length === 0) return alert("レポート対象となるデータがありません。");
     
     if (activeKeys.length === 0) return alert("APIキーがありません。");
     
     setIsGeneratingReport(true);
     try {
       const report = await generateSafetyReport(
-        displayResults, 
+        targets, 
         activeKeys[0], 
         modelId === 'custom' ? customModelId : modelId
       );
@@ -649,8 +663,8 @@ export default function App() {
   const handleReset = () => {
     if (isProcessing && !confirm("処理を中断して初期化しますか？")) return;
     setInventory([]);
+    setResults({});
     setFileMeta([]);
-    setResults([]);
     setReportText('');
     setProgress(0);
     setErrorMsg('');
@@ -666,7 +680,6 @@ export default function App() {
     stopRef.current = true;
   };
 
-  // エラーバウンダリー的な処理を含むメインループ
   const startProcessing = async () => {
     const initialKeys = parseKeys(apiKeysText);
     setActiveKeys(initialKeys);
@@ -674,7 +687,8 @@ export default function App() {
 
     if (initialKeys.length === 0) return alert("有効なAPIキーが設定されていません。");
     
-    const uncheckedItems = inventory.filter(i => i.risk === 'Unchecked');
+    // まだ判定結果がない（resultsにIDキーがない）ものを対象にする
+    const uncheckedItems = inventory.filter(i => !results[i.id] || results[i.id].risk === 'Unchecked');
     if (uncheckedItems.length === 0) return alert("未判定のデータがありません。");
 
     setIsProcessing(true);
@@ -700,13 +714,6 @@ export default function App() {
     await new Promise(resolve => setTimeout(resolve, initialJitter));
 
     const currentModelId = modelId === 'custom' ? customModelId : modelId;
-
-    const updateInventory = (updates) => {
-      setInventory(prev => prev.map(item => {
-        const update = updates.find(u => u.id === item.id);
-        return update ? { ...item, ...update } : item;
-      }));
-    };
 
     try {
       while (currentIndex < total) {
@@ -734,13 +741,17 @@ export default function App() {
           if (chunkProducts.length > 0) {
             tasks.push(
               checkIPRiskBulkWithRotation(chunkProducts, activeKeys, setActiveKeys, currentModelId).then(resultMap => {
-                const updates = chunkProducts.map(p => ({
-                  id: p.id,
-                  risk: resultMap[p.id]?.risk || "Error",
-                  reason: resultMap[p.id]?.reason || "判定失敗",
-                }));
-                updateInventory(updates);
-                return updates;
+                // 結果を整形
+                const updates = {};
+                chunkProducts.forEach(p => {
+                    updates[p.id] = {
+                        risk: resultMap[p.id]?.risk || "Error",
+                        reason: resultMap[p.id]?.reason || "判定失敗"
+                    };
+                });
+                // ここでinventory全体ではなく、resultsのみを更新することで高速化
+                setResults(prev => ({ ...prev, ...updates }));
+                return Object.values(updates);
               })
             );
           }
@@ -770,7 +781,6 @@ export default function App() {
 
           } catch (e) {
             console.error("Batch error:", e);
-            // 個別のバッチエラーで全体を止めない
             currentIndex += (CONCURRENCY * BULK_SIZE);
           }
         }
@@ -789,16 +799,14 @@ export default function App() {
     setIsProcessing(false);
   };
 
-  const displayResults = inventory.filter(i => ['Critical', 'High', 'Medium'].includes(i.risk));
-
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
         <div className="bg-white p-16 rounded-2xl shadow-2xl w-full max-w-5xl transition-all border border-slate-200">
           <div className="flex flex-col items-center">
             <div className="bg-teal-600 p-6 rounded-full mb-8 shadow-lg shadow-teal-200"><ShieldCheck className="w-16 h-16 text-white" /></div>
-            <h1 className="text-4xl font-black text-center text-slate-800 mb-2 tracking-tight">トイガン・セーフティチェック <span className="text-teal-600">Ver.2</span></h1>
-            <span className="text-sm font-bold bg-slate-100 text-slate-500 px-4 py-1.5 rounded-full mb-10">ZIP / 複数ファイル対応版</span>
+            <h1 className="text-4xl font-black text-center text-slate-800 mb-2 tracking-tight">トイガン・セーフティチェック <span className="text-teal-600">Ver.2.1</span></h1>
+            <span className="text-sm font-bold bg-slate-100 text-slate-500 px-4 py-1.5 rounded-full mb-10">軽量化・安定版</span>
           </div>
           <form onSubmit={handleLogin} className="space-y-8 max-w-xl mx-auto"> 
             <div>
@@ -806,6 +814,9 @@ export default function App() {
               <input type="password" value={inputPassword} onChange={(e) => setInputPassword(e.target.value)} className="w-full px-6 py-4 border border-slate-300 rounded-xl focus:ring-4 focus:ring-teal-100 focus:border-teal-500 outline-none transition-all text-lg" placeholder="パスワードを入力" autoFocus />
             </div>
             <button type="submit" className="w-full bg-teal-600 text-white py-4 rounded-xl font-bold text-xl hover:bg-teal-700 shadow-xl shadow-teal-200 transition-all active:scale-95">ログインして開始</button>
+            <div className="text-center">
+               <span className="text-xs text-slate-400">Password: admin123</span>
+            </div>
           </form>
         </div>
       </div>
@@ -818,7 +829,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3 font-black text-slate-800 text-xl">
             <ShieldCheck className="w-8 h-8 text-teal-600" />
-            <span>トイガン・セーフティチェック <span className="text-xs font-medium text-white bg-teal-600 px-2 py-0.5 rounded ml-1">Ver.2</span></span>
+            <span>トイガン・セーフティチェック <span className="text-xs font-medium text-white bg-teal-600 px-2 py-0.5 rounded ml-1">Ver.2.1</span></span>
           </div>
           <div className="flex items-center gap-1">
             <button onClick={() => setActiveTab('checker')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'checker' ? 'bg-teal-50 text-teal-600' : 'text-slate-500 hover:bg-slate-50'}`}>スクリーニング</button>
@@ -1007,7 +1018,7 @@ export default function App() {
           </div>
         )}
 
-        {/* 設定タブの内容は省略（変更なし） */}
+        {/* 設定タブの内容 */}
         {activeTab === 'settings' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
