@@ -17,13 +17,14 @@ const RISK_MAP = {
 };
 
 const MODELS = [
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (推奨・高速)' },
+  { id: 'gemini-2.0-flash-lite-preview-02-05', name: 'Gemini 2.0 Flash-Lite (最新・高速)' },
+  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (安定・推奨)' },
   { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B (軽量)' },
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (高精度)' },
   { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (実験的)' },
 ];
 
-const DEFAULT_MODEL = 'gemini-1.5-flash';
+const DEFAULT_MODEL = 'gemini-2.0-flash-lite-preview-02-05';
 const FALLBACK_MODEL = 'gemini-1.5-flash';
 
 // 商品名を特定するためのキーワード（優先順）
@@ -66,7 +67,7 @@ const parseCSV = (text) => {
         if (char === '\r' && nextChar === '\n') i++;
         currentRow.push(currentField); 
         currentField = '';
-        // 空行スキップ (必要に応じて)
+        // 空行スキップ
         if (currentRow.some(f => f.trim() !== '')) {
            rows.push(currentRow);
         }
@@ -245,6 +246,7 @@ JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", 
       if (!isFallback && currentModelId !== FALLBACK_MODEL) {
         return checkIPRiskBulkWithRotation(products, availableKeys, setAvailableKeys, FALLBACK_MODEL, true);
       }
+      throw new Error("404 Not Found: モデル名またはAPIエンドポイントが無効です");
     }
 
     if (response.status === 400 || response.status === 403) {
@@ -281,6 +283,7 @@ JSON配列のみ出力: [{"id": "ID", "risk_level": "Critical/High/Medium/Low", 
 
     const resultMap = {};
     parsedResults.forEach(item => {
+      // IDは文字列として比較
       const matchingProduct = products.find(p => String(p.id) === String(item.id));
       if (!matchingProduct) return;
 
