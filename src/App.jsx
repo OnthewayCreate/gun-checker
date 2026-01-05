@@ -17,13 +17,14 @@ const RISK_MAP = {
 };
 
 const MODELS = [
-  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (推奨・高速)' },
+  { id: 'gemini-2.0-flash-lite-preview-02-05', name: 'Gemini 2.0 Flash-Lite (最新・高速)' },
+  { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash (安定・推奨)' },
   { id: 'gemini-1.5-flash-8b', name: 'Gemini 1.5 Flash-8B (軽量)' },
   { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro (高精度)' },
   { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (実験的)' },
 ];
 
-const DEFAULT_MODEL = 'gemini-1.5-flash';
+const DEFAULT_MODEL = 'gemini-2.0-flash-lite-preview-02-05';
 const FALLBACK_MODEL = 'gemini-1.5-flash';
 
 // 商品名を特定するためのキーワード（優先順）
@@ -332,10 +333,10 @@ export default function App() {
       setActiveKeys(parseKeys(savedKeys));
     }
 
-    // 以前の保存モデルが現在のモデルリストにない場合（2.5 Flashなど）はデフォルト(1.5)に戻す
     if (savedModel && MODELS.some(m => m.id === savedModel)) {
       setModelId(savedModel);
     } else {
+      // 保存されたモデルがない、または無効な場合はデフォルトを強制
       setModelId(DEFAULT_MODEL);
     }
 
@@ -379,13 +380,15 @@ export default function App() {
     let results = {};
     let validKeys = [];
     
-    const targetModel = modelId === 'custom' ? customModelId : modelId;
+    // 設定画面で選択中のモデル、またはデフォルトを使用
+    const targetModel = modelId === 'custom' ? customModelId : (modelId || DEFAULT_MODEL);
 
     for (const key of keys) {
       results[key] = { status: 'loading' };
       setKeyStatuses({...results});
       
       try {
+        // 接続テスト用のURL生成
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${key}`;
         let res = await fetch(url, {
           method: 'POST',
@@ -397,6 +400,7 @@ export default function App() {
           results[key] = { status: 'ok', msg: `接続OK (${targetModel})` };
           validKeys.push(key);
         } else if (res.status === 404) {
+          // 404の場合はモデル名が間違っている可能性があるので、FALLBACK_MODELで再試行
           const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${FALLBACK_MODEL}:generateContent?key=${key}`;
           const resFallback = await fetch(fallbackUrl, {
             method: 'POST',
@@ -408,12 +412,15 @@ export default function App() {
              results[key] = { status: 'ok', msg: `${FALLBACK_MODEL}でOK` };
              validKeys.push(key);
           } else {
-             results[key] = { status: 'error', msg: '無効なキー' };
+             results[key] = { status: 'error', msg: '無効なキー(404)' };
           }
         } else {
+          const errText = await res.text();
+          console.error("API Error Details:", errText);
           results[key] = { status: 'error', msg: `エラー: ${res.status}` };
         }
       } catch (e) {
+        console.error("Connection Error:", e);
         results[key] = { status: 'error', msg: '通信エラー' };
       }
       setKeyStatuses({...results});
